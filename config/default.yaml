@@ -1,0 +1,71 @@
+# AI Gimbal Camera - Default Configuration
+
+camera:
+  source: 0
+  width: 1280
+  height: 720
+  fps: 30
+  processing_width: 640
+  processing_height: 480
+
+serial:
+  port: auto
+  baud: 115200
+  timeout: 0.1
+
+models:
+  gaze_custom: models/gaze_cnn.pth
+  gesture_svm: models/gesture_svm.pkl
+  gesture_scaler: models/gesture_scaler.pkl
+  face_svm: models/face_svm.pkl
+  face_scaler: models/face_scaler.pkl
+
+face_detection:
+  min_confidence: 0.0
+  max_lost_frames: 5
+  iou_threshold: 0.3
+
+pid:
+  pan:
+    Kp: 2.0
+    Ki: 0.05
+    Kd: 0.5
+    output_limits: [-30, 30]
+    integral_limit: 10.0
+  tilt:
+    Kp: 2.0
+    Ki: 0.05
+    Kd: 0.5
+    output_limits: [-30, 30]
+    integral_limit: 10.0
+  dead_zone: 0.05
+  max_angle_delta: 5.0
+
+gesture:
+  min_confidence: 0.6
+  method: svm
+
+gaze:
+  method: custom_cnn
+  cascade: true
+
+state_machine:
+  idle_timeout_frames: 150
+
+calibration:
+  checkerboard_cols: 9
+  checkerboard_rows: 6
+  square_size_mm: 25.0
+
+gimbal:
+  pan_min: 0
+  pan_max: 180
+  tilt_min: 45
+  tilt_max: 135
+  pan_center: 90
+  tilt_center: 90
+
+imu:
+  enabled: true
+  i2c_addr: 0x68
+  filter_alpha: 0.2
