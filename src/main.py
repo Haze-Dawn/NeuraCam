@@ -7,14 +7,14 @@ from datetime import datetime
 from src.utils.config import load_config, Config
 from src.capture.camera import Camera
 from src.capture.recorder import Recorder
-from src.cv.face_detector import FaceDetector, FaceTracker
-from src.cv.gaze_estimator import GazeEstimator
-from src.cv.gesture_classifier import GestureClassifier
+from src.cv.face_detector_cnn import FaceCNN
+from src.cv.face_tracker import KalmanTracker
+from src.cv.gesture_classifier import GestureClassifier, HandDetector
 from src.control.gimbal import GimbalController
-from src.control.pid import PIDController
+from src.control.pid import PIDController, compute_adaptive_dead_zone
 from src.control.state_machine import StateMachine, Mode
 from src.utils.visualization import (
-    draw_debug_overlay, compute_framing_error, crop_face_region
+    draw_debug_overlay, compute_framing_error
 )
 
 
@@ -47,55 +47,68 @@ def run(cfg: Config = None):
         height=cfg.camera.height,
         fps=cfg.camera.fps,
         processing_width=cfg.camera.processing_width,
-        processing_height=cfg.camera.processing_height
+        processing_height=cfg.camera.processing_height,
+        use_capture_thread=cfg.camera.use_capture_thread,
     )
 
-    face_detector = FaceDetector(
-        model_path=cfg.models.face_svm,
-        scaler_path=cfg.models.face_scaler,
-        min_confidence=cfg.face_detection.min_confidence
-    )
-    face_tracker = FaceTracker(
-        max_lost_frames=cfg.face_detection.max_lost_frames,
-        iou_threshold=cfg.face_detection.iou_threshold
+    face_cnn = FaceCNN(
+        model_path=cfg.models.face_cnn,
+        confidence_threshold=cfg.face_detection.confidence_threshold,
+        nms_iou_threshold=cfg.face_detection.nms_iou_threshold,
+        input_size=cfg.face_detection.input_size,
     )
 
-    gaze_estimator = GazeEstimator(
-        custom_cnn_path=cfg.models.gaze_custom
+    kalman_tracker = KalmanTracker(
+        process_noise=cfg.kalman.process_noise,
+        measurement_noise=cfg.kalman.measurement_noise,
+        max_lost_frames=cfg.kalman.max_lost_frames,
+        iou_threshold=cfg.kalman.iou_threshold,
+    )
+
+    hand_detector = HandDetector(
+        ycrcb_lower=tuple(cfg.hand_detection.ycrcb_lower),
+        ycrcb_upper=tuple(cfg.hand_detection.ycrcb_upper),
+        hsv_lower=tuple(cfg.hand_detection.hsv_lower),
+        hsv_upper=tuple(cfg.hand_detection.hsv_upper),
+        min_area=cfg.hand_detection.min_area,
+        use_motion=cfg.hand_detection.use_motion,
     )
 
     gesture_classifier = GestureClassifier(
         svm_path=cfg.models.gesture_svm,
         scaler_path=cfg.models.gesture_scaler,
-        min_confidence=cfg.gesture.min_confidence
+        pca_path=cfg.models.gesture_pca,
+        min_confidence=cfg.gesture.min_confidence,
     )
 
     gimbal = GimbalController(
         port=cfg.serial.port,
         baud=cfg.serial.baud,
-        timeout=cfg.serial.timeout
+        timeout=cfg.serial.timeout,
+        batch_commands=cfg.serial.batch_commands,
+        control_rate_hz=cfg.serial.control_rate_hz,
     )
     gimbal.home()
 
     pid_pan = PIDController(
         Kp=cfg.pid.pan.Kp, Ki=cfg.pid.pan.Ki, Kd=cfg.pid.pan.Kd,
         output_limits=tuple(cfg.pid.pan.output_limits),
-        integral_limit=cfg.pid.pan.integral_limit
+        integral_limit=cfg.pid.pan.integral_limit,
     )
     pid_tilt = PIDController(
         Kp=cfg.pid.tilt.Kp, Ki=cfg.pid.tilt.Ki, Kd=cfg.pid.tilt.Kd,
         output_limits=tuple(cfg.pid.tilt.output_limits),
-        integral_limit=cfg.pid.tilt.integral_limit
+        integral_limit=cfg.pid.tilt.integral_limit,
     )
 
     state_machine = StateMachine(
-        idle_timeout_frames=cfg.state_machine.idle_timeout_frames
+        idle_timeout_frames=cfg.state_machine.idle_timeout_frames,
     )
 
     recorder = Recorder(
         fps=cfg.camera.fps,
         width=cfg.camera.width,
-        height=cfg.camera.height
+        height=cfg.camera.height,
     )
 
     logger = ExperimentLogger()
@@ -131,8 +144,9 @@ def run(cfg: Config = None):
         h, w = frame.shape[:2]
 
         processing_frame = camera.get_processing_frame(frame)
-        faces = face_detector.detect(processing_frame)
-        face = face_tracker.update(faces)
+        faces = face_cnn.detect(processing_frame)
+        face = kalman_tracker.update(faces, frame_dt)
+
         if face:
             scale_x = w / camera.processing_width
             scale_y = h / camera.processing_height
@@ -155,8 +169,13 @@ def run(cfg: Config = None):
                 homing = False
 
         if state_machine.mode == Mode.TRACKING and face:
+            if cfg.pid.dead_zone_adaptive:
+                dead_zone = compute_adaptive_dead_zone(face.bbox, (w, h))
+            else:
+                dead_zone = cfg.pid.dead_zone_base
+
             error_x, error_y = compute_framing_error(
-                face.bbox, (w, h), cfg.pid.dead_zone
+                face.bbox, (w, h), dead_zone
             )
             delta_pan = pid_pan.update(error_x, frame_dt)
             delta_tilt = pid_tilt.update(error_y, frame_dt)
@@ -168,29 +187,27 @@ def run(cfg: Config = None):
             pid_tilt.reset()
 
         gesture_result = None
-        gaze_result = None
 
         if frame_count % 6 == 0:
-            gesture_result = gesture_classifier.predict(frame)
-            if gesture_result:
-                state_machine.process_gesture(gesture_result.gesture)
-
-            if face:
-                face_crop = crop_face_region(frame, face.bbox)
-                gaze_result = gaze_estimator.predict(face_crop)
-                if gaze_result:
-                    state_machine.update_gaze(gaze_result.direction)
+            hand_roi = hand_detector.detect(
+                frame, face_bbox=face.bbox if face else None
+            )
+            if hand_roi:
+                roi, _ = hand_roi
+                gesture_result = gesture_classifier.predict(roi)
+                if gesture_result:
+                    state_machine.process_gesture(gesture_result.gesture)
 
         overlay = draw_debug_overlay(
             frame=frame,
             face=face,
-            gaze=gaze_result,
             gesture=gesture_result,
             mode=state_machine.mode,
             fps=current_fps,
             recording=recorder.recording,
             gimbal_angles=(gimbal.pan_angle, gimbal.tilt_angle),
             imu_angles=(gimbal.imu_pitch, gimbal.imu_roll, gimbal.imu_yaw),
+            kalman_uncertainty=kalman_tracker.uncertainty,
         )
 
         recorder.write_frame(overlay)
@@ -207,7 +224,7 @@ def run(cfg: Config = None):
                 "imu_yaw": gimbal.imu_yaw,
                 "fps": current_fps,
                 "gesture": gesture_result.gesture if gesture_result else None,
-                "gaze": gaze_result.direction_label if gaze_result else None,
+                "kalman_uncertainty": kalman_tracker.uncertainty,
             }
             logger.log(log_entry)
 

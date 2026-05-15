@@ -2,12 +2,13 @@ import os
 import cv2
 import numpy as np
 import json
-from src.cv.face_detector import FaceDetector
+from src.cv.face_detector_cnn import FaceCNN
 
 
-def evaluate_fddb(fddb_dir: str, output_dir: str = "reports"):
+def evaluate_wider(val_dir: str, model_path: str = "models/face_cnn.pth",
+                   output_dir: str = "reports"):
     os.makedirs(output_dir, exist_ok=True)
-    detector = FaceDetector(min_confidence=0.5)
+    detector = FaceCNN(model_path=model_path, confidence_threshold=0.5)
 
     results = {
         "total_images": 0,
@@ -15,12 +16,12 @@ def evaluate_fddb(fddb_dir: str, output_dir: str = "reports"):
         "inference_times_ms": [],
     }
 
-    if not os.path.exists(fddb_dir):
-        print(f"FDDB directory not found: {fddb_dir}")
+    if not os.path.exists(val_dir):
+        print(f"Validation directory not found: {val_dir}")
         print("Skipping face evaluation.")
         return None
 
-    for root, dirs, files in os.walk(fddb_dir):
+    for root, dirs, files in os.walk(val_dir):
         for fname in files:
             if not fname.lower().endswith((".jpg", ".png", ".jpeg")):
                 continue
@@ -39,8 +40,8 @@ def evaluate_fddb(fddb_dir: str, output_dir: str = "reports"):
     if results["total_images"] > 0:
         results["detection_rate"] = (results["faces_detected"] /
                                       results["total_images"])
-        results["avg_inference_time_ms"] = np.mean(results["inference_times_ms"])
-        results["std_inference_time_ms"] = np.std(results["inference_times_ms"])
+        results["avg_inference_time_ms"] = float(np.mean(results["inference_times_ms"]))
+        results["std_inference_time_ms"] = float(np.std(results["inference_times_ms"]))
 
     report_path = os.path.join(output_dir, "logs", "face_evaluation.json")
     os.makedirs(os.path.dirname(report_path), exist_ok=True)
@@ -53,7 +54,8 @@ def evaluate_fddb(fddb_dir: str, output_dir: str = "reports"):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data", default="data/face/fddb")
+    parser.add_argument("--data", default="data/face/widerface/WIDER_val")
+    parser.add_argument("--model", default="models/face_cnn.pth")
     parser.add_argument("--output", default="reports")
     args = parser.parse_args()
-    evaluate_fddb(args.data, args.output)
+    evaluate_wider(args.data, args.model, args.output)

@@ -1,5 +1,4 @@
 import time
-import sys
 from typing import Optional
 
 
@@ -9,17 +8,24 @@ AUTO_PORTS = ["/dev/ttyUSB0", "/dev/ttyACM0", "/dev/ttyAMA0",
 
 class GimbalController:
     def __init__(self, port: str = "auto",
-                 baud: int = 115200, timeout: float = 0.1):
+                 baud: int = 115200, timeout: float = 0.1,
+                 batch_commands: bool = True,
+                 control_rate_hz: float = 100.0):
         self.port = port
         self.baud = baud
         self.timeout = timeout
+        self.batch_commands = batch_commands
+        self.control_interval = 1.0 / max(control_rate_hz, 1.0)
         self._ser = None
         self.pan_angle = 90
         self.tilt_angle = 90
+        self._pending_pan = 90
+        self._pending_tilt = 90
         self._connected = False
         self.imu_pitch = 0.0
         self.imu_roll = 0.0
         self.imu_yaw = 0.0
+        self._last_write = 0.0
         self._connect()
 
     def _connect(self):
@@ -39,14 +45,17 @@ class GimbalController:
                 return
             except Exception:
                 continue
-        print(f"Serial connection failed on all ports, no hardware control")
+        print("Serial connection failed on all ports, no hardware control")
         self._connected = False
 
     def _read_response(self):
         if self._ser and self._ser.in_waiting:
-            data = self._ser.read_all().decode().strip()
-            self._parse_status(data)
-            return data
+            try:
+                data = self._ser.read_all().decode().strip()
+                self._parse_status(data)
+                return data
+            except Exception:
+                return ""
         return ""
 
     def _parse_status(self, data: str):
@@ -64,22 +73,43 @@ class GimbalController:
                 pass
 
     def _send(self, cmd: str):
+        now = time.monotonic()
+        if now - self._last_write < self.control_interval:
+            return
         if self._ser and self._connected:
             try:
                 self._ser.write((cmd + "\n").encode())
+                self._last_write = now
             except Exception as e:
                 print(f"Serial write failed: {e}")
                 self._connected = False
 
+    def _flush_batch(self):
+        if not self.batch_commands:
+            return
+        p = int(max(0, min(180, self._pending_pan)))
+        t = int(max(45, min(135, self._pending_tilt)))
+        self.pan_angle = p
+        self.tilt_angle = t
+        self._send(f"P:{p} T:{t}")
+
     def set_pan(self, angle: float):
         angle = int(max(0, min(180, angle)))
-        self.pan_angle = angle
-        self._send(f"PAN:{angle}")
+        if self.batch_commands:
+            self._pending_pan = angle
+            self._flush_batch()
+        else:
+            self.pan_angle = angle
+            self._send(f"PAN:{angle}")
 
     def set_tilt(self, angle: float):
         angle = int(max(45, min(135, angle)))
-        self.tilt_angle = angle
-        self._send(f"TILT:{angle}")
+        if self.batch_commands:
+            self._pending_tilt = angle
+            self._flush_batch()
+        else:
+            self.tilt_angle = angle
+            self._send(f"TILT:{angle}")
 
     def set_pan_delta(self, delta: float):
         target = self.pan_angle + delta
@@ -101,7 +131,7 @@ class GimbalController:
         if self._ser:
             try:
                 self._ser.close()
-            except:
+            except Exception:
                 pass
             self._ser = None
             self._connected = False

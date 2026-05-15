@@ -3,19 +3,21 @@ import json
 import numpy as np
 import time
 from src.capture.camera import Camera
-from src.cv.face_detector import FaceDetector, FaceTracker
+from src.cv.face_detector_cnn import FaceCNN
+from src.control.kalman import KalmanTracker
 from src.utils.visualization import compute_framing_error
 
 
-def evaluate_system(duration_sec: int = 60, output_dir: str = "reports"):
+def evaluate_system(duration_sec: int = 60, output_dir: str = "reports",
+                    model_path: str = "models/face_cnn.pth"):
     os.makedirs(output_dir, exist_ok=True)
 
-    camera = Camera(source=0, width=640, height=480)
-    face_detector = FaceDetector(min_confidence=0.5)
-    face_tracker = FaceTracker(max_lost_frames=5)
+    camera = Camera(source=0, width=1280, height=720,
+                    use_capture_thread=False)
+    face_cnn = FaceCNN(model_path=model_path, confidence_threshold=0.5)
+    kalman = KalmanTracker(max_lost_frames=5, iou_threshold=0.3)
 
     start_time = time.time()
-    last_time = start_time
     frame_count = 0
     errors_x = []
     errors_y = []
@@ -32,10 +34,18 @@ def evaluate_system(duration_sec: int = 60, output_dir: str = "reports"):
         total_frames += 1
         t = time.time()
 
-        faces = face_detector.detect(frame)
-        face = face_tracker.update(faces)
+        processing = camera.get_processing_frame(frame)
+        faces = face_cnn.detect(processing)
+        face = kalman.update(faces)
 
         if face:
+            scale_x = camera.width / camera.processing_width
+            scale_y = camera.height / camera.processing_height
+            face.bbox.x = int(face.bbox.x * scale_x)
+            face.bbox.y = int(face.bbox.y * scale_y)
+            face.bbox.w = int(face.bbox.w * scale_x)
+            face.bbox.h = int(face.bbox.h * scale_y)
+
             face_detected_frames += 1
             h, w = frame.shape[:2]
             error_x, error_y = compute_framing_error(
@@ -80,5 +90,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--duration", type=int, default=60)
     parser.add_argument("--output", default="reports")
+    parser.add_argument("--model", default="models/face_cnn.pth")
     args = parser.parse_args()
-    evaluate_system(args.duration, args.output)
+    evaluate_system(args.duration, args.output, args.model)

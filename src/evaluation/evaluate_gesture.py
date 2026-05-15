@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import json
 import joblib
+from sklearn.decomposition import PCA
 from sklearn.metrics import confusion_matrix, classification_report
 
 
@@ -14,17 +15,24 @@ ID_TO_GESTURE = {v: k for k, v in GESTURE_LABELS.items()}
 
 
 def evaluate_gesture(data_csv: str, model_path: str,
-                     scaler_path: str, output_dir: str = "reports"):
+                     scaler_path: str, pca_path: str = None,
+                     output_dir: str = "reports"):
     os.makedirs(output_dir, exist_ok=True)
 
     df = pd.read_csv(data_csv)
-    X = df.iloc[:, 1:].values
-    y = df["gesture"].map(GESTURE_LABELS).values
+    gesture_col = [c for c in df.columns if c.lower() == "gesture"][0]
+    feature_cols = [c for c in df.columns if c != gesture_col]
+    X = df[feature_cols].values.astype(np.float32)
+    y = df[gesture_col].map(GESTURE_LABELS).values
 
     svm = joblib.load(model_path)
     scaler = joblib.load(scaler_path)
-    X_scaled = scaler.transform(X)
 
+    if pca_path and os.path.exists(pca_path):
+        pca = joblib.load(pca_path)
+        X = pca.transform(X)
+
+    X_scaled = scaler.transform(X)
     y_pred = svm.predict(X_scaled)
     accuracy = np.mean(y_pred == y)
     cm = confusion_matrix(y, y_pred)
@@ -74,9 +82,10 @@ def evaluate_gesture(data_csv: str, model_path: str,
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data", default="data/gesture/raw/landmarks.csv")
+    parser.add_argument("--data", default="data/gesture/raw/features.csv")
     parser.add_argument("--model", default="models/gesture_svm.pkl")
     parser.add_argument("--scaler", default="models/gesture_scaler.pkl")
+    parser.add_argument("--pca", default="models/gesture_pca.pkl")
     parser.add_argument("--output", default="reports")
     args = parser.parse_args()
-    evaluate_gesture(args.data, args.model, args.scaler, args.output)
+    evaluate_gesture(args.data, args.model, args.scaler, args.pca, args.output)

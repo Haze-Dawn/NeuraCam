@@ -1,8 +1,7 @@
 import cv2
 import numpy as np
-from typing import Optional
-from src.cv.face_detector import Face, BoundingBox
-from src.cv.gaze_estimator import GazeResult, DIRECTION_LABELS
+from typing import Optional, Tuple
+from src.control.kalman import Face, BoundingBox
 from src.cv.gesture_classifier import GestureResult
 from src.control.state_machine import Mode
 
@@ -19,8 +18,8 @@ def crop_face_region(frame: np.ndarray, bbox: BoundingBox,
     return frame[y1:y2, x1:x2]
 
 
-def compute_framing_error(face_bbox: BoundingBox, frame_size: tuple,
-                          dead_zone: float = 0.05) -> tuple[float, float]:
+def compute_framing_error(face_bbox: BoundingBox, frame_size: Tuple[int, int],
+                          dead_zone: float = 0.05) -> Tuple[float, float]:
     fw, fh = frame_size
     face_cx = face_bbox.x + face_bbox.w / 2
     face_cy = face_bbox.y + face_bbox.h / 2
@@ -36,13 +35,13 @@ def compute_framing_error(face_bbox: BoundingBox, frame_size: tuple,
 def draw_debug_overlay(
     frame: np.ndarray,
     face: Optional[Face] = None,
-    gaze: Optional[GazeResult] = None,
     gesture: Optional[GestureResult] = None,
     mode: Mode = Mode.IDLE,
     fps: float = 0.0,
     recording: bool = False,
-    gimbal_angles: tuple = (90, 90),
-    imu_angles: Optional[tuple] = None,
+    gimbal_angles: Tuple[int, int] = (90, 90),
+    imu_angles: Optional[Tuple[float, float, float]] = None,
+    kalman_uncertainty: float = 0.0,
 ) -> np.ndarray:
     overlay = frame.copy()
 
@@ -52,36 +51,10 @@ def draw_debug_overlay(
         cv2.circle(overlay, (int(face.bbox.center_x), int(face.bbox.center_y)),
                    4, (0, 255, 0), -1)
 
-    if gaze:
-        arrow_colors = {
-            0: (0, 255, 0),
-            1: (255, 0, 0),
-            2: (0, 0, 255),
-            3: (0, 255, 255),
-            4: (255, 255, 0),
-        }
-        color = arrow_colors.get(gaze.direction, (255, 255, 255))
-        h, w = overlay.shape[:2]
-        cx, cy = w // 2, h // 2
-        arrow_end = (cx, cy)
-        if gaze.direction == 0:
-            cv2.circle(overlay, (cx, cy), 10, color, 2)
-        elif gaze.direction == 1:
-            arrow_end = (cx - 60, cy)
-        elif gaze.direction == 2:
-            arrow_end = (cx + 60, cy)
-        elif gaze.direction == 3:
-            arrow_end = (cx, cy - 60)
-        elif gaze.direction == 4:
-            arrow_end = (cx, cy + 60)
-        cv2.arrowedLine(overlay, (cx, cy), arrow_end, color, 2, tipLength=0.3)
-        cv2.putText(overlay, f"Gaze: {DIRECTION_LABELS[gaze.direction]}",
-                    (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-
     if gesture and gesture.gesture != "NONE":
         color = (0, 255, 255) if gesture.method == "rule" else (255, 0, 255)
         cv2.putText(overlay, f"Gesture: {gesture.gesture}",
-                    (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                    (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
     mode_colors = {
         Mode.IDLE: (128, 128, 128),
@@ -112,5 +85,18 @@ def draw_debug_overlay(
         cv2.putText(overlay, f"IMU P:{pitch:.1f} R:{roll:.1f} Y:{yaw:.1f}",
                     (10, overlay.shape[0] - 40),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+
+    if kalman_uncertainty > 0:
+        bar_x = overlay.shape[1] - 120
+        bar_y = 60
+        bar_w = 100
+        bar_h = 8
+        fill_w = int(bar_w * min(kalman_uncertainty, 1.0))
+        color = (0, 255, 0) if kalman_uncertainty < 0.3 else \
+                (0, 255, 255) if kalman_uncertainty < 0.6 else (0, 0, 255)
+        cv2.rectangle(overlay, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h),
+                      (100, 100, 100), 1)
+        cv2.rectangle(overlay, (bar_x, bar_y), (bar_x + fill_w, bar_y + bar_h),
+                      color, -1)
 
     return overlay

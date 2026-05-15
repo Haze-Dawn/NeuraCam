@@ -1,7 +1,11 @@
 import cv2
 import numpy as np
+import joblib
+from typing import Optional, Tuple
 from dataclasses import dataclass
-from typing import Optional
+
+GESTURE_LABELS = {0: "OPEN_PALM", 1: "FIST", 2: "THUMBS_UP", 3: "POINT", 4: "PEACE"}
+GESTURE_ACTIONS = {"OPEN_PALM", "FIST", "THUMBS_UP"}
 
 
 @dataclass
@@ -11,140 +15,155 @@ class GestureResult:
     method: str
 
 
-GESTURE_LABELS = ["OPEN_PALM", "FIST", "THUMBS_UP", "POINT", "PEACE"]
-GESTURE_ACTIONS = {"OPEN_PALM", "FIST", "THUMBS_UP"}
-WINDOW_SIZE = (64, 64)
+class HandDetector:
+    def __init__(self,
+                 ycrcb_lower: Tuple[int, int, int] = (0, 133, 77),
+                 ycrcb_upper: Tuple[int, int, int] = (255, 173, 127),
+                 hsv_lower: Tuple[int, int, int] = (0, 30, 60),
+                 hsv_upper: Tuple[int, int, int] = (20, 150, 255),
+                 min_area: int = 1000,
+                 use_motion: bool = True):
+        self.ycrcb_lower = np.array(ycrcb_lower)
+        self.ycrcb_upper = np.array(ycrcb_upper)
+        self.hsv_lower = np.array(hsv_lower)
+        self.hsv_upper = np.array(hsv_upper)
+        self.min_area = min_area
+        self.use_motion = use_motion
+        self._prev_gray: Optional[np.ndarray] = None
+
+    def detect(self, frame: np.ndarray,
+               face_bbox=None) -> Optional[Tuple[np.ndarray, Tuple[int, int, int, int]]]:
+        ycrcb = cv2.cvtColor(frame, cv2.COLOR_BGR2YCrCb)
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+        mask_ycrcb = cv2.inRange(ycrcb, self.ycrcb_lower, self.ycrcb_upper)
+        mask_hsv = cv2.inRange(hsv, self.hsv_lower, self.hsv_upper)
+        skin_mask = cv2.bitwise_or(mask_ycrcb, mask_hsv)
+
+        if self.use_motion and self._prev_gray is not None:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            diff = cv2.absdiff(gray, self._prev_gray)
+            _, motion_mask = cv2.threshold(diff, 15, 255, cv2.THRESH_BINARY)
+            skin_mask = cv2.bitwise_and(skin_mask, motion_mask)
+            self._prev_gray = gray
+        elif self.use_motion:
+            self._prev_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+        if face_bbox is not None:
+            x, y, w, h = face_bbox.x, face_bbox.y, face_bbox.w, face_bbox.h
+            margin_x = int(w * 0.2)
+            margin_y = int(h * 0.2)
+            fx1 = max(0, x - margin_x)
+            fy1 = max(0, y - margin_y)
+            fx2 = min(frame.shape[1], x + w + margin_x)
+            fy2 = min(frame.shape[0], y + h + margin_y)
+            face_exclusion = np.zeros(skin_mask.shape, dtype=np.uint8)
+            cv2.rectangle(face_exclusion, (fx1, fy1), (fx2, fy2), 255, -1)
+            skin_mask = cv2.bitwise_and(skin_mask, cv2.bitwise_not(face_exclusion))
+
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        skin_mask = cv2.morphologyEx(skin_mask, cv2.MORPH_OPEN, kernel)
+        skin_mask = cv2.morphologyEx(skin_mask, cv2.MORPH_CLOSE, kernel)
+
+        contours, _ = cv2.findContours(skin_mask, cv2.RETR_EXTERNAL,
+                                       cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return None
+
+        largest = max(contours, key=cv2.contourArea)
+        area = cv2.contourArea(largest)
+        if area < self.min_area:
+            return None
+
+        x, y, w, h = cv2.boundingRect(largest)
+        roi = frame[y:y + h, x:x + w]
+        if roi.size == 0:
+            return None
+        return roi, (x, y, w, h)
 
 
 class GestureClassifier:
     def __init__(self, svm_path: Optional[str] = None,
                  scaler_path: Optional[str] = None,
+                 pca_path: Optional[str] = None,
                  min_confidence: float = 0.6):
+        self.min_confidence = min_confidence
         self.svm = None
         self.scaler = None
-        self.min_confidence = min_confidence
-
-        self.hog = cv2.HOGDescriptor(
-            _winSize=WINDOW_SIZE,
-            _blockSize=(16, 16),
-            _blockStride=(8, 8),
-            _cellSize=(8, 8),
-            _nbins=9,
-        )
+        self.pca = None
+        self.hog = cv2.HOGDescriptor((64, 64), (16, 16), (8, 8), (8, 8), 9)
 
         if svm_path:
             try:
-                import joblib
                 self.svm = joblib.load(svm_path)
-                self.scaler = joblib.load(scaler_path) if scaler_path else None
-                print(f"Loaded gesture SVM from {svm_path}")
             except Exception as e:
-                print(f"Failed to load gesture SVM: {e}")
+                print(f"Failed to load SVM: {e}")
+        if scaler_path:
+            try:
+                self.scaler = joblib.load(scaler_path)
+            except Exception as e:
+                print(f"Failed to load scaler: {e}")
+        if pca_path:
+            try:
+                self.pca = joblib.load(pca_path)
+            except Exception as e:
+                print(f"Failed to load PCA: {e}")
 
-    def find_hand_roi(self, frame: np.ndarray,
-                      face_bbox: Optional[tuple] = None) -> Optional[np.ndarray]:
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        lower = np.array([0, 20, 40])
-        upper = np.array([25, 170, 255])
-        mask = cv2.inRange(hsv, lower, upper)
+    def predict(self, hand_roi: np.ndarray) -> GestureResult:
+        roi = cv2.resize(hand_roi, (64, 64))
+        features = self.hog.compute(roi).flatten()
 
-        kernel = np.ones((5, 5), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-        mask = cv2.dilate(mask, kernel, iterations=2)
-
-        if face_bbox is not None:
-            fx, fy, fw, fh = face_bbox
-            margin = int(max(fw, fh) * 0.3)
-            x1 = max(0, fx - margin)
-            y1 = max(0, fy - margin)
-            x2 = min(frame.shape[1], fx + fw + margin)
-            y2 = min(frame.shape[0], fy + fh + margin)
-            mask[y1:y2, x1:x2] = 0
-
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
-                                        cv2.CHAIN_APPROX_SIMPLE)
-        if not contours:
-            return None
-
-        hand = max(contours, key=cv2.contourArea)
-        if cv2.contourArea(hand) < 2000:
-            return None
-
-        x, y, w, h = cv2.boundingRect(hand)
-        margin = int(max(w, h) * 0.1)
-        x1 = max(0, x - margin)
-        y1 = max(0, y - margin)
-        x2 = min(frame.shape[1], x + w + margin)
-        y2 = min(frame.shape[0], y + h + margin)
-        return frame[y1:y2, x1:x2]
-
-    def extract_hog_features(self, hand_roi: np.ndarray) -> np.ndarray:
-        gray = cv2.cvtColor(hand_roi, cv2.COLOR_BGR2GRAY)
-        resized = cv2.resize(gray, WINDOW_SIZE)
-        features = self.hog.compute(resized).ravel()
-        return features
-
-    def predict(self, frame: np.ndarray,
-                face_bbox: Optional[tuple] = None) -> GestureResult:
-        hand_roi = self.find_hand_roi(frame, face_bbox)
-        if hand_roi is None:
-            return GestureResult("NONE", 0.0, "none")
-
-        features = self.extract_hog_features(hand_roi)
-
-        if self.svm is not None:
+        if self.svm is not None and self.scaler is not None:
             try:
                 X = features.reshape(1, -1)
-                if self.scaler:
-                    X = self.scaler.transform(X)
-                pred = self.svm.predict(X)[0]
-                conf = float(np.max(self.svm.predict_proba(X)))
-                gesture = GESTURE_LABELS[pred]
-                if conf >= self.min_confidence:
-                    return GestureResult(gesture, conf, "svm")
+                if self.pca is not None:
+                    X = self.pca.transform(X)
+                X_scaled = self.scaler.transform(X)
+                pred = self.svm.predict(X_scaled)[0]
+                proba = self.svm.predict_proba(X_scaled)[0]
+                confidence = float(max(proba))
+                if confidence >= self.min_confidence:
+                    gesture = GESTURE_LABELS.get(int(pred), "NONE")
+                    return GestureResult(gesture, confidence, "svm")
             except Exception as e:
-                print(f"SVM prediction failed: {e}")
+                print(f"SVM predict failed: {e}")
 
-        return self._rule_based(hand_roi)
+        gesture = self._rule_based(roi)
+        return GestureResult(gesture, 0.9, "rule")
 
-    def _rule_based(self, hand_roi: np.ndarray) -> GestureResult:
-        gray = cv2.cvtColor(hand_roi, cv2.COLOR_BGR2GRAY)
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-        _, thresh = cv2.threshold(blurred, 0, 255,
-                                   cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    def _rule_based(self, roi: np.ndarray) -> str:
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        _, thresh = cv2.threshold(gray, 60, 255, cv2.THRESH_BINARY)
+
         contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL,
-                                        cv2.CHAIN_APPROX_SIMPLE)
+                                       cv2.CHAIN_APPROX_SIMPLE)
         if not contours:
-            return GestureResult("NONE", 0.0, "rule")
+            return "NONE"
 
-        hand = max(contours, key=cv2.contourArea)
-        hull = cv2.convexHull(hand, returnPoints=False)
-        if hull.ndim == 1 or len(hull) < 4:
-            return GestureResult("FIST", 0.7, "rule")
+        hand_contour = max(contours, key=cv2.contourArea)
+        hull = cv2.convexHull(hand_contour, returnPoints=False)
+        if hull.ndim == 1 or len(hull) < 3:
+            return "NONE"
 
-        defects = cv2.convexityDefects(hand, hull)
-        if defects is None:
-            return GestureResult("FIST", 0.7, "rule")
+        defects = cv2.convexityDefects(hand_contour, hull)
+        defect_count = 0
+        if defects is not None:
+            for i in range(defects.shape[0]):
+                s, e, f, d = defects[i, 0]
+                if d > 15000:
+                    defect_count += 1
 
-        ext_fingers = 0
-        for i in range(defects.shape[0]):
-            _, _, far_dist = defects[i, 0, 2], defects[i, 0, 3]
-            far_dist = far_dist / 256.0
-            if far_dist > 15:
-                ext_fingers += 1
+        x, y, w, h = cv2.boundingRect(hand_contour)
+        aspect_ratio = h / max(w, 1)
 
-        if ext_fingers >= 4:
-            return GestureResult("OPEN_PALM", 0.8, "rule")
-        elif ext_fingers <= 1:
-            return GestureResult("FIST", 0.8, "rule")
-        elif ext_fingers == 2:
-            return GestureResult("PEACE", 0.7, "rule")
-        elif ext_fingers == 3:
-            return GestureResult("POINT", 0.7, "rule")
-        return GestureResult("NONE", 0.5, "rule")
-
-    def close(self):
-        pass
-
-    def __del__(self):
-        pass
+        if defect_count >= 4:
+            return "OPEN_PALM"
+        elif defect_count <= 1 and aspect_ratio > 1.3:
+            return "POINT"
+        elif defect_count <= 1:
+            return "FIST"
+        elif defect_count <= 2:
+            return "PEACE"
+        elif defect_count <= 3:
+            return "THUMBS_UP"
+        return "NONE"

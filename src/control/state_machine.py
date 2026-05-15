@@ -15,7 +15,6 @@ class StateMachine:
         self._last_face_frame = 0
         self._frame_count = 0
         self._current_gesture = "NONE"
-        self._current_gaze = 0
 
     def process_gesture(self, gesture: str):
         self._current_gesture = gesture
@@ -25,9 +24,6 @@ class StateMachine:
             self.mode = Mode.TRACKING
         elif gesture == "THUMBS_UP":
             self.mode = Mode.HOME
-
-    def update_gaze(self, gaze_direction: int):
-        self._current_gaze = gaze_direction
 
     def update_face_status(self, face_detected: bool):
         self._frame_count += 1
@@ -53,7 +49,3 @@ class StateMachine:
     @property
     def gesture(self) -> str:
         return self._current_gesture
-
-    @property
-    def gaze(self) -> int:
-        return self._current_gaze

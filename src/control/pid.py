@@ -1,9 +1,10 @@
 import numpy as np
+from typing import Optional, Tuple
 
 
 class PIDController:
     def __init__(self, Kp: float = 2.0, Ki: float = 0.05, Kd: float = 0.5,
-                 output_limits: tuple = (-30, 30),
+                 output_limits: Tuple[float, float] = (-30, 30),
                  integral_limit: float = 10.0, dt: float = 0.033):
         self.Kp = Kp
         self.Ki = Ki
@@ -17,7 +18,7 @@ class PIDController:
         self.prev_error = 0.0
         self.filtered_derivative = 0.0
 
-    def update(self, error: float, dt: float = None) -> float:
+    def update(self, error: float, dt: Optional[float] = None) -> float:
         if dt is not None:
             self.dt = max(dt, 0.001)
 
@@ -45,3 +46,16 @@ class PIDController:
         self.integral = 0.0
         self.prev_error = 0.0
         self.filtered_derivative = 0.0
+
+
+def compute_adaptive_dead_zone(face_bbox, frame_size: Tuple[int, int],
+                                base_ratio: float = 0.25,
+                                min_dz: float = 0.02,
+                                max_dz: float = 0.10) -> float:
+    face_w = face_bbox.w
+    frame_w = frame_size[0]
+    if frame_w <= 0 or face_w <= 0:
+        return min_dz
+    ratio = face_w / frame_w
+    dead_zone = np.clip(ratio * base_ratio, min_dz, max_dz)
+    return float(dead_zone)
