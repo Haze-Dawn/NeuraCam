@@ -1,0 +1,26 @@
+{
+  "block1.2": {
+    "mean_activation": 0.39723140001296997,
+    "std_activation": 0.6125848293304443,
+    "dead_neuron_pct": 52.428871393203735,
+    "max_activation": 7.872829437255859
+  },
+  "block2.2": {
+    "mean_activation": 0.383674681186676,
+    "std_activation": 0.6488261818885803,
+    "dead_neuron_pct": 53.205710649490356,
+    "max_activation": 9.29843521118164
+  },
+  "block3.2": {
+    "mean_activation": 0.33145672082901,
+    "std_activation": 0.6712349057197571,
+    "dead_neuron_pct": 55.54696321487427,
+    "max_activation": 10.170147895812988
+  },
+  "block4.2": {
+    "mean_activation": 0.28836148977279663,
+    "std_activation": 0.4983427822589874,
+    "dead_neuron_pct": 42.143797874450684,
+    "max_activation": 9.512320518493652
+  }
+}

@@ -1,0 +1,80 @@
+# AI Gimbal Camera - Default Configuration (v2.0)
+
+camera:
+  source: 0
+  width: 1280
+  height: 720
+  fps: 30
+  processing_width: 640
+  processing_height: 480
+  use_capture_thread: true
+
+serial:
+  port: auto
+  baud: 115200
+  timeout: 0.1
+  batch_commands: true
+  control_rate_hz: 100
+
+models:
+  face_cnn: models/face_cnn.pth
+  gesture_pca: models/gesture_pca.pkl
+  gesture_svm: models/gesture_svm.pkl
+  gesture_scaler: models/gesture_scaler.pkl
+
+face_detection:
+  confidence_threshold: 0.5
+  nms_iou_threshold: 0.3
+  input_size: 128
+
+kalman:
+  process_noise: 0.01
+  measurement_noise: 0.1
+  max_lost_frames: 5
+  iou_threshold: 0.3
+
+pid:
+  pan:
+    Kp: 2.0
+    Ki: 0.05
+    Kd: 0.5
+    output_limits: [-30, 30]
+    integral_limit: 10.0
+  tilt:
+    Kp: 2.0
+    Ki: 0.05
+    Kd: 0.5
+    output_limits: [-30, 30]
+    integral_limit: 10.0
+  dead_zone_base: 0.05
+  dead_zone_adaptive: true
+  max_angle_delta: 5.0
+
+gesture:
+  min_confidence: 0.6
+  method: svm
+  pca_components: 80
+
+hand_detection:
+  ycrcb_lower: [0, 133, 77]
+  ycrcb_upper: [255, 173, 127]
+  hsv_lower: [0, 30, 60]
+  hsv_upper: [20, 150, 255]
+  use_motion: true
+  min_area: 1000
+
+state_machine:
+  idle_timeout_frames: 150
+
+calibration:
+  checkerboard_cols: 9
+  checkerboard_rows: 6
+  square_size_mm: 25.0
+
+gimbal:
+  pan_min: 0
+  pan_max: 180
+  tilt_min: 45
+  tilt_max: 135
+  pan_center: 90
+  tilt_center: 90

@@ -1,0 +1,30 @@
+{
+  "block1.1": {
+    "running_mean_mean": 0.04107676446437836,
+    "running_mean_std": 0.37360095977783203,
+    "running_var_mean": 0.06196143850684166,
+    "running_var_std": 0.053223829716444016,
+    "num_features": 16
+  },
+  "block2.1": {
+    "running_mean_mean": 0.13726678490638733,
+    "running_mean_std": 0.4458538591861725,
+    "running_var_mean": 0.8253289461135864,
+    "running_var_std": 0.48181673884391785,
+    "num_features": 32
+  },
+  "block3.1": {
+    "running_mean_mean": 0.14847581088542938,
+    "running_mean_std": 0.8451460003852844,
+    "running_var_mean": 2.7750794887542725,
+    "running_var_std": 1.1338931322097778,
+    "num_features": 64
+  },
+  "block4.1": {
+    "running_mean_mean": -0.5397149324417114,
+    "running_mean_std": 1.4549119472503662,
+    "running_var_mean": 10.91511344909668,
+    "running_var_std": 4.180256366729736,
+    "num_features": 128
+  }
+}
