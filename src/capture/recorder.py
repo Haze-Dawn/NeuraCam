@@ -5,7 +5,7 @@ from typing import Optional
 
 class Recorder:
     def __init__(self, output_path: str = "output.mp4",
-                 fps: float = 30.0, width: int = 640, height: int = 480):
+                 fps: float = 30.0, width: int = 1280, height: int = 720):
         self.output_path = output_path
         self.fps = fps
         self.width = width

@@ -17,7 +17,7 @@ class CameraConfig:
 
 @dataclass
 class SerialConfig:
-    port: str = "/dev/ttyUSB0"
+    port: str = "auto"
     baud: int = 115200
     timeout: float = 0.1
     batch_commands: bool = True
@@ -34,9 +34,10 @@ class ModelsConfig:
 
 @dataclass
 class FaceDetectionConfig:
-    confidence_threshold: float = 0.5
-    nms_iou_threshold: float = 0.3
+    confidence_threshold: float = 0.3
+    nms_iou_threshold: float = 0.25
     input_size: int = 128
+    skip_scale_threshold: float = 0.9
 
 
 @dataclass
@@ -85,6 +86,8 @@ class HandDetectionConfig:
 @dataclass
 class StateMachineConfig:
     idle_timeout_frames: int = 150
+    gesture_hold_frames: int = 5
+    search_duration: int = 90
 
 
 @dataclass

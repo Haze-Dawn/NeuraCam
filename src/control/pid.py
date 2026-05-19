@@ -1,5 +1,6 @@
 import numpy as np
 from typing import Optional, Tuple
+from src.cv.face_tracker import BoundingBox
 
 
 class PIDController:
@@ -48,7 +49,7 @@ class PIDController:
         self.filtered_derivative = 0.0
 
 
-def compute_adaptive_dead_zone(face_bbox, frame_size: Tuple[int, int],
+def compute_adaptive_dead_zone(face_bbox: BoundingBox, frame_size: Tuple[int, int],
                                 base_ratio: float = 0.25,
                                 min_dz: float = 0.02,
                                 max_dz: float = 0.10) -> float:

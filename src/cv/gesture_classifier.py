@@ -158,12 +158,19 @@ class GestureClassifier:
 
         if defect_count >= 4:
             return "OPEN_PALM"
-        elif defect_count <= 1 and aspect_ratio > 1.3:
-            return "POINT"
-        elif defect_count <= 1:
-            return "FIST"
-        elif defect_count <= 2:
+        elif defect_count == 0:
+            if aspect_ratio > 1.4:
+                return "POINT"
+            else:
+                return "FIST"
+        elif defect_count == 1:
+            if aspect_ratio < 1.1:
+                return "THUMBS_UP"
+            elif aspect_ratio > 1.6:
+                return "POINT"
+            else:
+                return "THUMBS_UP"
+        elif defect_count == 2:
             return "PEACE"
-        elif defect_count <= 3:
-            return "THUMBS_UP"
-        return "NONE"
+        else:
+            return "OPEN_PALM"

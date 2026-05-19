@@ -2,13 +2,29 @@ import cv2
 import json
 import time
 import os
+import signal
+import collections
+import numpy as np
 from datetime import datetime
+
+_has_display = bool(os.environ.get("DISPLAY")) or os.name == "nt"
+_shutdown_requested = False
+
+
+def _signal_handler(signum, frame):
+    global _shutdown_requested
+    print(f"\nSignal {signum} received, shutting down...")
+    _shutdown_requested = True
+
+
+signal.signal(signal.SIGINT, _signal_handler)
+signal.signal(signal.SIGTERM, _signal_handler)
 
 from src.utils.config import load_config, Config
 from src.capture.camera import Camera
 from src.capture.recorder import Recorder
 from src.cv.face_detector_cnn import FaceCNN
-from src.cv.face_tracker import KalmanTracker
+from src.cv.face_tracker import KalmanTracker, Face, BoundingBox
 from src.cv.gesture_classifier import GestureClassifier, HandDetector
 from src.control.gimbal import GimbalController
 from src.control.pid import PIDController, compute_adaptive_dead_zone
@@ -37,6 +53,38 @@ class ExperimentLogger:
         print(f"Log saved to {path}")
 
 
+class LatencyProfiler:
+    """Per-component latency waterfall tracker.
+    Records rolling average of each main-loop component's execution time.
+    """
+    def __init__(self, window=30):
+        self.window = window
+        self.times = collections.defaultdict(lambda: collections.deque(maxlen=window))
+        self._marks = {}
+
+    def mark(self, name: str):
+        """Call mark('start') then mark('detect'), etc. to time intervals."""
+        now = time.perf_counter()
+        if name in self._marks:
+            elapsed = (now - self._marks.pop(name)) * 1000
+            self.times[name].append(elapsed)
+        else:
+            self._marks[name] = now
+
+    def avg(self, name: str) -> float:
+        if not self.times[name]:
+            return 0.0
+        return float(np.mean(self.times[name]))
+
+    def snapshot(self) -> dict:
+        """Return dict with avg ms per component."""
+        return {k: round(self.avg(k), 2) for k in self.times}
+
+    def total_avg(self) -> float:
+        """Total loop time = sum of all timing marks."""
+        return sum(self.avg(k) for k in self.times)
+
+
 def run(cfg: Config = None):
     if cfg is None:
         cfg = load_config()
@@ -56,6 +104,7 @@ def run(cfg: Config = None):
         confidence_threshold=cfg.face_detection.confidence_threshold,
         nms_iou_threshold=cfg.face_detection.nms_iou_threshold,
         input_size=cfg.face_detection.input_size,
+        skip_scale_threshold=cfg.face_detection.skip_scale_threshold,
     )
 
     kalman_tracker = KalmanTracker(
@@ -87,6 +136,7 @@ def run(cfg: Config = None):
         timeout=cfg.serial.timeout,
         batch_commands=cfg.serial.batch_commands,
         control_rate_hz=cfg.serial.control_rate_hz,
+        max_delta=cfg.pid.max_angle_delta,
     )
     gimbal.home()
 
@@ -103,6 +153,8 @@ def run(cfg: Config = None):
 
     state_machine = StateMachine(
         idle_timeout_frames=cfg.state_machine.idle_timeout_frames,
+        gesture_hold_frames=cfg.state_machine.gesture_hold_frames,
+        search_duration=cfg.state_machine.search_duration,
     )
 
     recorder = Recorder(
@@ -112,29 +164,32 @@ def run(cfg: Config = None):
     )
 
     logger = ExperimentLogger()
+    profiler = LatencyProfiler(window=30)
 
     frame_count = 0
     fps_timer = time.time()
     fps_counter = 0
     current_fps = 0.0
     running = True
-    homing = False
     last_frame_time = time.time()
 
     time.sleep(1.0)
 
     print("System ready. Controls: q=quit, h=home, space=lock, r=record")
 
-    while running:
+    while running and not _shutdown_requested:
+        profiler.mark("capture")
         frame_obj = camera.read()
         if frame_obj is None:
             continue
+        profiler.mark("capture")
 
         frame = frame_obj.data
         frame_count += 1
         fps_counter += 1
         if time.time() - fps_timer >= 1.0:
-            current_fps = fps_counter / (time.time() - fps_timer)
+            elapsed = time.time() - fps_timer
+            current_fps = fps_counter / elapsed if elapsed > 0 else 0.0
             fps_counter = 0
             fps_timer = time.time()
 
@@ -144,31 +199,35 @@ def run(cfg: Config = None):
         h, w = frame.shape[:2]
 
         processing_frame = camera.get_processing_frame(frame)
+        profiler.mark("detect")
         faces = face_cnn.detect(processing_frame)
+        profiler.mark("detect")
+        profiler.mark("track")
         face = kalman_tracker.update(faces, frame_dt)
+        profiler.mark("track")
 
         if face:
             scale_x = w / camera.processing_width
             scale_y = h / camera.processing_height
-            face.bbox.x = int(face.bbox.x * scale_x)
-            face.bbox.y = int(face.bbox.y * scale_y)
-            face.bbox.w = int(face.bbox.w * scale_x)
-            face.bbox.h = int(face.bbox.h * scale_y)
+            scaled_bbox = BoundingBox(
+                x=int(face.bbox.x * scale_x),
+                y=int(face.bbox.y * scale_y),
+                w=int(face.bbox.w * scale_x),
+                h=int(face.bbox.h * scale_y),
+            )
+            face = Face(bbox=scaled_bbox, confidence=face.confidence)
         state_machine.update_face_status(face is not None)
 
-        if state_machine.mode == Mode.HOME and not homing:
+        if state_machine.mode == Mode.HOME:
             gimbal.home()
-            homing = True
-
-        if homing:
-            if face:
-                state_machine.finish_homing()
-                homing = False
-            else:
-                state_machine.finish_homing()
-                homing = False
+            if gimbal.pan_angle == 90 and gimbal.tilt_angle == 90:
+                if face:
+                    state_machine.mode = Mode.TRACKING
+                else:
+                    state_machine.mode = Mode.SEARCH
 
         if state_machine.mode == Mode.TRACKING and face:
+            profiler.mark("pid")
             if cfg.pid.dead_zone_adaptive:
                 dead_zone = compute_adaptive_dead_zone(face.bbox, (w, h))
             else:
@@ -181,23 +240,35 @@ def run(cfg: Config = None):
             delta_tilt = pid_tilt.update(error_y, frame_dt)
             gimbal.set_pan_delta(delta_pan)
             gimbal.set_tilt_delta(delta_tilt)
+            profiler.mark("pid")
 
         elif state_machine.mode == Mode.IDLE:
             pid_pan.reset()
             pid_tilt.reset()
 
+        elif state_machine.mode == Mode.SEARCH:
+            sweep_progress = state_machine.search_progress
+            target_pan = int(90 + (sweep_progress - 0.5) * 180)
+            target_pan = max(0, min(180, target_pan))
+            gimbal.set_pan(target_pan)
+            pid_pan.reset()
+            pid_tilt.reset()
+
         gesture_result = None
 
-        if frame_count % 6 == 0:
+        if frame_count % 6 == 0 and state_machine.mode in (
+                Mode.TRACKING, Mode.LOCKED):
+            profiler.mark("gesture")
             hand_roi = hand_detector.detect(
                 frame, face_bbox=face.bbox if face else None
             )
             if hand_roi:
                 roi, _ = hand_roi
                 gesture_result = gesture_classifier.predict(roi)
-                if gesture_result:
-                    state_machine.process_gesture(gesture_result.gesture)
+                state_machine.process_gesture(gesture_result.gesture)
+            profiler.mark("gesture")
 
+        profiler.mark("display")
         overlay = draw_debug_overlay(
             frame=frame,
             face=face,
@@ -213,6 +284,8 @@ def run(cfg: Config = None):
         recorder.write_frame(overlay)
 
         if frame_count % 30 == 0:
+            gimbal.poll_imu()
+            latency = profiler.snapshot()
             log_entry = {
                 "frame": frame_count,
                 "mode": state_machine.mode.value,
@@ -225,16 +298,20 @@ def run(cfg: Config = None):
                 "fps": current_fps,
                 "gesture": gesture_result.gesture if gesture_result else None,
                 "kalman_uncertainty": kalman_tracker.uncertainty,
+                "latency_ms": latency,
             }
             logger.log(log_entry)
 
-        cv2.imshow("AI Gimbal Camera", overlay)
-        key = cv2.waitKey(1) & 0xFF
+        if _has_display:
+            cv2.imshow("AI Gimbal Camera", overlay)
+            key = cv2.waitKey(1) & 0xFF
+        else:
+            key = 0xFF
+        profiler.mark("display")
 
         if key == ord('q'):
             running = False
         elif key == ord('h'):
-            gimbal.home()
             state_machine.mode = Mode.HOME
         elif key == ord(' '):
             state_machine.toggle_lock()
@@ -246,7 +323,7 @@ def run(cfg: Config = None):
                 recorder.start()
                 print("Recording started")
 
-    gimbal.home()
+    gimbal.home_immediate()
     camera.release()
     recorder.stop()
     logger.save("session")

@@ -1,21 +1,9 @@
 import cv2
 import numpy as np
 from typing import Optional, Tuple
-from src.control.kalman import Face, BoundingBox
+from src.cv.face_tracker import Face, BoundingBox
 from src.cv.gesture_classifier import GestureResult
 from src.control.state_machine import Mode
-
-
-def crop_face_region(frame: np.ndarray, bbox: BoundingBox,
-                     margin: float = 0.3) -> np.ndarray:
-    h, w = frame.shape[:2]
-    x, y, bw, bh = bbox.x, bbox.y, bbox.w, bbox.h
-    mw, mh = int(bw * margin), int(bh * margin)
-    x1 = max(0, x - mw)
-    y1 = max(0, y - mh)
-    x2 = min(w, x + bw + mw)
-    y2 = min(h, y + bh + mh)
-    return frame[y1:y2, x1:x2]
 
 
 def compute_framing_error(face_bbox: BoundingBox, frame_size: Tuple[int, int],
@@ -61,6 +49,7 @@ def draw_debug_overlay(
         Mode.TRACKING: (0, 255, 0),
         Mode.LOCKED: (0, 165, 255),
         Mode.HOME: (255, 255, 0),
+        Mode.SEARCH: (255, 128, 0),
     }
     mode_color = mode_colors.get(mode, (255, 255, 255))
     cv2.rectangle(overlay, (5, 5), (200, 50), (0, 0, 0), -1)
