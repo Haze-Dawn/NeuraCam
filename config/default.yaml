@@ -1,4 +1,4 @@
-# AI Gimbal Camera - Default Configuration (v2.0)
+# AI Gimbal Camera - Default Configuration (v3.2)
 
 camera:
   source: 0
@@ -23,9 +23,10 @@ models:
   gesture_scaler: models/gesture_scaler.pkl
 
 face_detection:
-  confidence_threshold: 0.5
-  nms_iou_threshold: 0.3
+  confidence_threshold: 0.3
+  nms_iou_threshold: 0.25
   input_size: 128
+  skip_scale_threshold: 0.9
 
 kalman:
   process_noise: 0.01
@@ -52,7 +53,6 @@ pid:
 
 gesture:
   min_confidence: 0.6
-  method: svm
   pca_components: 80
 
 hand_detection:
@@ -65,6 +65,8 @@ hand_detection:
 
 state_machine:
   idle_timeout_frames: 150
+  gesture_hold_frames: 5
+  search_duration: 90
 
 calibration:
   checkerboard_cols: 9

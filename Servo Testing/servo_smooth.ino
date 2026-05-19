@@ -1,6 +1,5 @@
 // Butter-smooth servo sweep using direct Timer1 hardware PWM on pin 9 (OC1A)
 // Bypasses the Servo library entirely for cleaner timing and higher frequency
-// MG90S: set FREQ_HZ = 100 (100Hz instead of default 50Hz for faster response)
 // Standalone test -- not part of gimbal firmware. The production firmware
 // (firmware/arduino_gimbal/arduino_gimbal.ino) uses the Servo.h library for
 // compatibility with Servo.write(angle) command format from Python.

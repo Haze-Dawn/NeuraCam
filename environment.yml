@@ -1,0 +1,5 @@
+# Note: This project uses pyenv + pip, not conda.
+# See requirements.txt for dependencies.
+# This file exists only because older README references referenced it.
+# Install with:
+#   pip install -r requirements.txt

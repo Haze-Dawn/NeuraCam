@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.so
+
+# Virtual environments
+.env/
+venv/
+.venv/
+
+# Conda
+conda-env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Data
+data/face/widerface/
+data/gesture/raw/
+data/face/custom/
+
+# Models
+models/*.pth
+models/*.pkl
+models/training_metrics.csv
+models/training_summary.json
+models/face_cnn_analysis/
+
+# Output
+output.mp4
+experiments/
+reports/figures/
+reports/logs/
+calibration_images/
+calibration.json
+config/calibration.json
+
+# Testing
+.pytest_cache/
+htmlcov/
+.coverage
+
+# OS
+.DS_Store
+Thumbs.db

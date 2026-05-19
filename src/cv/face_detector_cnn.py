@@ -3,7 +3,7 @@ import torch.nn as nn
 import cv2
 import numpy as np
 from typing import List
-from src.control.kalman import Face, BoundingBox
+from src.cv.face_tracker import Face, BoundingBox, compute_iou
 
 
 class FaceFCN(nn.Module):
@@ -28,10 +28,12 @@ class FaceFCN(nn.Module):
             nn.MaxPool2d(2),
         )
         self.block4 = nn.Sequential(
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.Conv2d(64, 128, kernel_size=3, padding=2, dilation=2),
             nn.BatchNorm2d(128),
             nn.ReLU(inplace=True),
         )
+        self.skip_conv = nn.Conv2d(64, 128, kernel_size=1)
+        self.fuse_conv = nn.Conv2d(256, 128, kernel_size=1)
         self.head = nn.Conv2d(128, 4, kernel_size=1)
 
         self._init_weights()
@@ -47,15 +49,18 @@ class FaceFCN(nn.Module):
         x = self.block1(x)
         x = self.block2(x)
         x = self.block3(x)
+        skip = self.skip_conv(x)
         x = self.block4(x)
+        x = torch.cat([x, skip], dim=1)
+        x = self.fuse_conv(x)
         x = self.head(x)
         return x
 
 
 class FaceCNN:
     def __init__(self, model_path: str = "models/face_cnn.pth",
-                 confidence_threshold: float = 0.5,
-                 nms_iou_threshold: float = 0.3,
+                 confidence_threshold: float = 0.3,
+                 nms_iou_threshold: float = 0.25,
                  input_size: int = 128,
                  skip_scale_threshold: float = 0.9):
         self.confidence_threshold = confidence_threshold
@@ -67,20 +72,33 @@ class FaceCNN:
         self.grid_cells = input_size // self.stride
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = FaceFCN().to(self.device)
-        self.model.eval()
+        base_model = FaceFCN()
         try:
-            self.model.load_state_dict(
-                torch.load(model_path, map_location=self.device)
-            )
-            print(f"FaceCNN loaded from {model_path}")
+            state_dict = torch.load(model_path, map_location=self.device)
+            base_model.load_state_dict(state_dict)
+            base_model.eval()
+            try:
+                self.model = torch.jit.script(base_model)
+                print(f"FaceCNN loaded from {model_path} (TorchScript optimized)")
+            except Exception as js_err:
+                self.model = base_model
+                print(f"FaceCNN loaded from {model_path} "
+                      f"(TorchScript unavailable: {js_err})")
+            self.model.to(self.device)
+        except FileNotFoundError:
+            raise FileNotFoundError(
+                f"FaceCNN model not found at {model_path}. "
+                "Training is required before running detection."
+            ) from None
         except Exception as e:
-            print(f"FaceCNN load failed ({e}), running with random weights")
+            raise RuntimeError(
+                f"Failed to load FaceCNN model from {model_path}: {e}. "
+                "Ensure the model file is valid and compatible."
+            ) from e
 
     def detect(self, frame: np.ndarray) -> List[Face]:
         h, w = frame.shape[:2]
         min_size = self.input_size
-        detections = []
 
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
@@ -88,11 +106,12 @@ class FaceCNN:
         # Each step divides by 1.15 to detect progressively smaller faces
         n_scales = 5
         scales = [1.0 / (self.scale_factor ** i) for i in range(n_scales)]
-        best_conf = 0.0  # track max confidence across scales for early exit
+        best_conf = 0.0
 
-        for scale in scales:
-            # Confidence-based scale skipping: if we already have a high-confidence
-            # detection, skip smaller scales (face is already found at this size)
+        # Per-scale detection lists for score averaging across scales
+        scale_detections: List[List[Face]] = [[] for _ in scales]
+
+        for si, scale in enumerate(scales):
             if best_conf >= self.skip_scale_threshold:
                 continue
             new_w = int(w * scale)
@@ -135,40 +154,79 @@ class FaceCNN:
                 bw = min(int(box_size), w - x1)
                 bh = min(int(box_size), h - y1)
 
-                if bw > 5 and bh > 5:
+                if bw > 5 and bh > 5 and 20 <= box_size <= 500:
                     if conf > best_conf:
                         best_conf = conf
-                    detections.append(Face(
+                    scale_detections[si].append(Face(
                         bbox=BoundingBox(x=x1, y=y1, w=bw, h=bh),
                         confidence=conf
                     ))
 
-        return self._nms(detections)
+        # Score averaging across scales: group detections that overlap across
+        # different scales of the pyramid. The same face at adjacent scales
+        # produces similar bboxes with slightly different confidences.
+        # Averaging them reduces noise and produces smoother tracking.
+        all_detections = []
+        for sd in scale_detections:
+            all_detections.extend(sd)
 
-    def _nms(self, detections: List[Face]) -> List[Face]:
+        if not all_detections:
+            return []
+
+        # NMS with score averaging: group overlapping detections,
+        # replace each group with the highest-confidence bbox at average confidence
+        all_detections = sorted(all_detections, key=lambda d: d.confidence, reverse=True)
+        groups = []
+        assigned = [False] * len(all_detections)
+        for i, det in enumerate(all_detections):
+            if assigned[i]:
+                continue
+            group = [det]
+            assigned[i] = True
+            for j in range(i + 1, len(all_detections)):
+                if assigned[j]:
+                    continue
+                iou = compute_iou(det.bbox, all_detections[j].bbox)
+                if iou > self.nms_iou_threshold:
+                    group.append(all_detections[j])
+                    assigned[j] = True
+            groups.append(group)
+
+        merged = []
+        for group in groups:
+            avg_conf = float(np.mean([d.confidence for d in group]))
+            best = max(group, key=lambda d: d.confidence)
+            merged.append(Face(
+                bbox=BoundingBox(x=best.bbox.x, y=best.bbox.y,
+                                 w=best.bbox.w, h=best.bbox.h),
+                confidence=avg_conf
+            ))
+
+        merged.sort(key=lambda d: d.confidence, reverse=True)
+        return self._filter_by_confidence_ratio(merged)
+
+    def _filter_by_confidence_ratio(self, detections: List[Face]) -> List[Face]:
         if not detections:
             return []
-        detections = sorted(detections, key=lambda d: d.confidence, reverse=True)
-        keep = []
-        for det in detections:
-            keep_flag = True
-            for kept in keep:
-                iou = self._compute_iou(det.bbox, kept.bbox)
-                if iou > self.nms_iou_threshold and det.confidence < kept.confidence:
-                    keep_flag = False
-                    break
-            if keep_flag:
-                keep.append(det)
-        return keep
+        max_conf = max(d.confidence for d in detections)
+        if max_conf >= 0.5:
+            ratio_threshold = 0.3 * max_conf
+            kept = []
+            for d in detections:
+                if d.confidence >= ratio_threshold:
+                    kept.append(d)
+                else:
+                    # Exempt detections with low IoU against ALL kept detections.
+                    # A detection with IoU < 0.1 vs every already-kept detection
+                    # is likely a different face rather than a duplicate.
+                    is_different_face = True
+                    for k in kept:
+                        if compute_iou(d.bbox, k.bbox) >= 0.1:
+                            is_different_face = False
+                            break
+                    if is_different_face:
+                        kept.append(d)
+            return kept
+        return detections
 
-    @staticmethod
-    def _compute_iou(a: BoundingBox, b: BoundingBox) -> float:
-        x_overlap = max(0, min(a.x + a.w, b.x + b.w) - max(a.x, b.x))
-        y_overlap = max(0, min(a.y + a.h, b.y + b.h) - max(a.y, b.y))
-        intersection = x_overlap * y_overlap
-        if intersection == 0:
-            return 0.0
-        area_a = a.w * a.h
-        area_b = b.w * b.h
-        union = area_a + area_b - intersection
-        return intersection / union if union > 0 else 0.0
+

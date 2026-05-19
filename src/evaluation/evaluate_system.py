@@ -4,7 +4,7 @@ import numpy as np
 import time
 from src.capture.camera import Camera
 from src.cv.face_detector_cnn import FaceCNN
-from src.control.kalman import KalmanTracker
+from src.cv.face_tracker import KalmanTracker
 from src.utils.visualization import compute_framing_error
 
 

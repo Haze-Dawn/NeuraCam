@@ -7,7 +7,7 @@ import os, sys, json, glob
 import cv2
 import numpy as np
 from src.cv.face_detector_cnn import FaceCNN
-from src.control.kalman import BoundingBox
+from src.cv.face_tracker import BoundingBox
 
 
 def parse_wider_annotations(root_dir, split="val"):

@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 from typing import Optional, Tuple
-from src.control.kalman import Face, BoundingBox
+from src.cv.face_tracker import Face, BoundingBox
 from src.cv.gesture_classifier import GestureResult
 from src.control.state_machine import Mode
 
@@ -30,6 +30,8 @@ def draw_debug_overlay(
     gimbal_angles: Tuple[int, int] = (90, 90),
     imu_angles: Optional[Tuple[float, float, float]] = None,
     kalman_uncertainty: float = 0.0,
+    zoom_level: float = 1.0,
+    tracking_target: str = "FACE",
 ) -> np.ndarray:
     overlay = frame.copy()
 
@@ -47,17 +49,25 @@ def draw_debug_overlay(
     mode_colors = {
         Mode.IDLE: (128, 128, 128),
         Mode.TRACKING: (0, 255, 0),
+        Mode.TRACKING_HAND: (255, 165, 0),
         Mode.LOCKED: (0, 165, 255),
         Mode.HOME: (255, 255, 0),
+        Mode.SEARCH: (255, 128, 0),
     }
     mode_color = mode_colors.get(mode, (255, 255, 255))
-    cv2.rectangle(overlay, (5, 5), (200, 50), (0, 0, 0), -1)
-    cv2.putText(overlay, f"[{mode.value}]", (10, 30),
+    target_suffix = f" ({tracking_target})" if mode in (
+        Mode.TRACKING, Mode.TRACKING_HAND, Mode.LOCKED) else ""
+    cv2.rectangle(overlay, (5, 5), (250, 50), (0, 0, 0), -1)
+    cv2.putText(overlay, f"[{mode.value}{target_suffix}]", (10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, mode_color, 2)
 
     if fps > 0:
         cv2.putText(overlay, f"FPS: {fps:.1f}", (10, 60),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+
+    if zoom_level > 1.0:
+        cv2.putText(overlay, f"ZOOM: {zoom_level:.1f}x", (10, 80),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
 
     if recording:
         cv2.putText(overlay, "REC", (overlay.shape[1] - 80, 30),

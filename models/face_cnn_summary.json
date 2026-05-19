@@ -1,0 +1,115 @@
+{
+  "total_time_s": 5889.846231222153,
+  "total_time_min": 98.16410385370254,
+  "best_val_obj_loss": Infinity,
+  "best_val_f1": 0.0,
+  "total_params": 140420,
+  "trainable_params": 140420,
+  "model_size_mb": 0.54,
+  "epochs_completed": 50,
+  "total_tflops": 338.4174,
+  "tflops_per_epoch": 6.768348,
+  "inference_gflops": 10.2551,
+  "inference_scales": 5,
+  "inference_per_scale": [
+    {
+      "scale": 1.0,
+      "h": 480,
+      "w": 640,
+      "gflops": 3.3049
+    },
+    {
+      "scale": 0.8695652173913044,
+      "h": 417,
+      "w": 556,
+      "gflops": 2.5196
+    },
+    {
+      "scale": 0.7561436672967865,
+      "h": 362,
+      "w": 483,
+      "gflops": 1.902
+    },
+    {
+      "scale": 0.6575162324319883,
+      "h": 315,
+      "w": 420,
+      "gflops": 1.4374
+    },
+    {
+      "scale": 0.5717532455930334,
+      "h": 274,
+      "w": 365,
+      "gflops": 1.0911
+    }
+  ],
+  "training_flops_per_sample": 176259072.0,
+  "training_flops_per_batch_fwd_bwd": 67683483648.0,
+  "flops_breakdown": [
+    [
+      "block1_conv",
+      39321600
+    ],
+    [
+      "block1_bn",
+      1048576
+    ],
+    [
+      "block1_relu",
+      262144
+    ],
+    [
+      "block2_conv",
+      37748736
+    ],
+    [
+      "block2_bn",
+      524288
+    ],
+    [
+      "block2_relu",
+      131072
+    ],
+    [
+      "block3_conv",
+      37748736
+    ],
+    [
+      "block3_bn",
+      262144
+    ],
+    [
+      "block3_relu",
+      65536
+    ],
+    [
+      "block4_conv",
+      37748736
+    ],
+    [
+      "block4_bn",
+      131072
+    ],
+    [
+      "block4_relu",
+      32768
+    ],
+    [
+      "skip_conv",
+      4194304
+    ],
+    [
+      "fuse_conv",
+      16777216
+    ],
+    [
+      "head_conv",
+      262144
+    ]
+  ],
+  "gpu_efficiency_pct": 0.9,
+  "data_load_vs_compute_pct": {
+    "load": 6.1033415109007265,
+    "compute": 93.89665848909928
+  }
+}

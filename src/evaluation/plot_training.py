@@ -119,7 +119,7 @@ def plot_iou_curves(df):
     print("  04_iou_bbox_errors.pdf")
 
 
-def plot_calibration(df, analysis_data):
+def plot_calibration(df, analysis_data, metrics_path):
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
     ax = axes[0]
@@ -131,7 +131,7 @@ def plot_calibration(df, analysis_data):
     ax = axes[1]
     # Reliability diagram from last available confidence JSON
     conf_paths = sorted(glob.glob(os.path.join(
-        os.path.dirname(args.metrics).replace("training_metrics.csv", ""),
+        os.path.dirname(metrics_path),
         "face_cnn_analysis/epoch_*_confidence.json"
     )))
     if conf_paths:
@@ -473,7 +473,7 @@ def main():
     plot_lr_schedule(df)
     plot_prf1_curves(df)
     plot_iou_curves(df)
-    plot_calibration(df, analysis_data)
+    plot_calibration(df, analysis_data, args.metrics)
     plot_training_stability(df)
     plot_gradient_norm(df)
     plot_data_efficiency(df)

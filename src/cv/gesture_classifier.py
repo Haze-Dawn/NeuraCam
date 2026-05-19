@@ -30,6 +30,80 @@ class HandDetector:
         self.min_area = min_area
         self.use_motion = use_motion
         self._prev_gray: Optional[np.ndarray] = None
+        self._wave_buffer: list[float] = []
+        self._wave_cooldown = 0
+        self._pending_single = False
+        self._pending_frame = 0
+        self._wave_threshold = 0.08
+        self._min_step = 0.015
+
+    def detect_wave(self, hand_bbox: Optional[Tuple[int, int, int, int]],
+                    frame_width: int, frame_count: int) -> str:
+        if hand_bbox is None:
+            if self._pending_single and frame_count - self._pending_frame > 45:
+                self._pending_single = False
+                return 'single'
+            self._wave_buffer.clear()
+            return ''
+
+        if self._wave_cooldown > 0:
+            self._wave_cooldown -= 1
+            if self._pending_single and frame_count - self._pending_frame > 45:
+                self._pending_single = False
+                return 'single'
+            return ''
+
+        cx = hand_bbox[0] + hand_bbox[2] / 2
+        normalized = cx / max(frame_width, 1)
+
+        self._wave_buffer.append(normalized)
+        if len(self._wave_buffer) > 45:
+            self._wave_buffer.pop(0)
+
+        if len(self._wave_buffer) < 20:
+            if self._pending_single and frame_count - self._pending_frame > 45:
+                self._pending_single = False
+                return 'single'
+            return ''
+
+        window = self._wave_buffer[-20:]
+        x_range = max(window) - min(window)
+        if x_range < self._wave_threshold:
+            if self._pending_single and frame_count - self._pending_frame > 45:
+                self._pending_single = False
+                return 'single'
+            return ''
+
+        directions = []
+        for i in range(1, len(window)):
+            d = window[i] - window[i - 1]
+            if abs(d) > self._min_step:
+                directions.append(1 if d > 0 else -1)
+
+        if len(directions) < 3:
+            if self._pending_single and frame_count - self._pending_frame > 45:
+                self._pending_single = False
+                return 'single'
+            return ''
+
+        changes = sum(1 for i in range(1, len(directions))
+                      if directions[i] != directions[i - 1])
+        if changes < 2:
+            if self._pending_single and frame_count - self._pending_frame > 45:
+                self._pending_single = False
+                return 'single'
+            return ''
+
+        self._wave_buffer.clear()
+        self._wave_cooldown = 15
+
+        if self._pending_single and frame_count - self._pending_frame < 45:
+            self._pending_single = False
+            return 'double'
+        else:
+            self._pending_single = True
+            self._pending_frame = frame_count
+            return ''
 
     def detect(self, frame: np.ndarray,
                face_bbox=None) -> Optional[Tuple[np.ndarray, Tuple[int, int, int, int]]]:
@@ -92,6 +166,7 @@ class GestureClassifier:
         self.scaler = None
         self.pca = None
         self.hog = cv2.HOGDescriptor((64, 64), (16, 16), (8, 8), (8, 8), 9)
+        self.last_defect_count = 0
 
         if svm_path:
             try:
@@ -108,6 +183,27 @@ class GestureClassifier:
                 self.pca = joblib.load(pca_path)
             except Exception as e:
                 print(f"Failed to load PCA: {e}")
+
+    def compute_defect_count(self, roi: np.ndarray) -> int:
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        _, thresh = cv2.threshold(gray, 60, 255, cv2.THRESH_BINARY)
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL,
+                                        cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return 0
+        hand_contour = max(contours, key=cv2.contourArea)
+        hull = cv2.convexHull(hand_contour, returnPoints=False)
+        if hull.ndim == 1 or len(hull) < 3:
+            return 0
+        defects = cv2.convexityDefects(hand_contour, hull)
+        if defects is None:
+            return 0
+        count = 0
+        for i in range(defects.shape[0]):
+            s, e, f, d = defects[i, 0]
+            if d > 15000:
+                count += 1
+        return count
 
     def predict(self, hand_roi: np.ndarray) -> GestureResult:
         roi = cv2.resize(hand_roi, (64, 64))
@@ -132,38 +228,35 @@ class GestureClassifier:
         return GestureResult(gesture, 0.9, "rule")
 
     def _rule_based(self, roi: np.ndarray) -> str:
+        self.last_defect_count = self.compute_defect_count(roi)
+        defect_count = self.last_defect_count
+
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
         _, thresh = cv2.threshold(gray, 60, 255, cv2.THRESH_BINARY)
-
         contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL,
                                        cv2.CHAIN_APPROX_SIMPLE)
-        if not contours:
-            return "NONE"
-
-        hand_contour = max(contours, key=cv2.contourArea)
-        hull = cv2.convexHull(hand_contour, returnPoints=False)
-        if hull.ndim == 1 or len(hull) < 3:
-            return "NONE"
-
-        defects = cv2.convexityDefects(hand_contour, hull)
-        defect_count = 0
-        if defects is not None:
-            for i in range(defects.shape[0]):
-                s, e, f, d = defects[i, 0]
-                if d > 15000:
-                    defect_count += 1
-
-        x, y, w, h = cv2.boundingRect(hand_contour)
-        aspect_ratio = h / max(w, 1)
+        if contours:
+            hand_contour = max(contours, key=cv2.contourArea)
+            x, y, w, h = cv2.boundingRect(hand_contour)
+            aspect_ratio = h / max(w, 1)
+        else:
+            aspect_ratio = 1.0
 
         if defect_count >= 4:
             return "OPEN_PALM"
-        elif defect_count <= 1 and aspect_ratio > 1.3:
-            return "POINT"
-        elif defect_count <= 1:
-            return "FIST"
-        elif defect_count <= 2:
+        elif defect_count == 0:
+            if aspect_ratio > 1.4:
+                return "POINT"
+            else:
+                return "FIST"
+        elif defect_count == 1:
+            if aspect_ratio < 1.1:
+                return "THUMBS_UP"
+            elif aspect_ratio > 1.6:
+                return "POINT"
+            else:
+                return "THUMBS_UP"
+        elif defect_count == 2:
             return "PEACE"
-        elif defect_count <= 3:
-            return "THUMBS_UP"
-        return "NONE"
+        else:
+            return "OPEN_PALM"

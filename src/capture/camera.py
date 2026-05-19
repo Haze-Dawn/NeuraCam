@@ -104,11 +104,15 @@ class Camera:
 
     def release(self):
         self._running = False
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=1.0)
+        # Release the VideoCapture BEFORE joining the thread.
+        # On Linux (V4L2), cap.read() can block indefinitely; releasing
+        # the handle causes the blocking read to return (False, None)
+        # or raise, unblocking the capture thread.
         if self._cap is not None:
             self._cap.release()
             self._cap = None
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=2.0)
 
     @property
     def fps(self) -> float:

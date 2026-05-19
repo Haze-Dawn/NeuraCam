@@ -1,14 +1,20 @@
 /*
- * AI Gimbal Camera - Arduino Nano Firmware (v2.0)
- * Controls: 2x MG90S servos (pan/tilt), MPU6050 IMU (I2C)
+ * AI Gimbal Camera - Arduino Nano Firmware (v2.1)
+ * Controls: 2x EMAX ES08MAII servos (pan/tilt), MPU6050 IMU (I2C)
  * Protocol: P:T (batched), PAN, TILT, HOME, STATUS
  * Baud: 115200
  * Libraries: Servo.h (built-in), Wire.h (built-in), MPU6050 (install via Library Manager)
+ *
+ * v2.1 changes:
+ * - Watchdog timer (WDT) enabled, reset every loop() iteration
+ * - IMU data cached: read every ~100ms in background, STATUS returns cached values
+ *   (prevents I2C read latency from blocking servo command processing)
  */
 
 #include <Servo.h>
 #include <Wire.h>
 #include <MPU6050.h>
+#include <avr/wdt.h>
 
 Servo panServo;
 Servo tiltServo;
@@ -24,6 +30,23 @@ const int TILT_MAX = 135;
 
 int panAngle = 90;
 int tiltAngle = 90;
+
+// Cached IMU data
+float cached_pitch = 0.0;
+float cached_roll = 0.0;
+unsigned long last_imu_read = 0;
+const unsigned long IMU_READ_INTERVAL = 100;  // read IMU every 100ms (10Hz)
+
+void read_imu_cache() {
+  unsigned long now = millis();
+  if (now - last_imu_read < IMU_READ_INTERVAL) return;
+  last_imu_read = now;
+
+  int16_t ax, ay, az, gx, gy, gz;
+  imu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
+  cached_pitch = atan2(-ax, sqrt(ay * ay + az * az)) * 180.0 / PI;
+  cached_roll = atan2(ay, az) * 180.0 / PI;
+}
 
 int parseValue(String cmd, char key) {
   int idx = cmd.indexOf(key);
@@ -43,8 +66,12 @@ void setup() {
   tiltServo.write(tiltAngle);
 
   Wire.begin();
+  Wire.setClock(100000);
   imu.initialize();
   Serial.begin(115200);
+
+  wdt_enable(WDTO_2S);
+
   if (imu.testConnection()) {
     Serial.println("GIMBAL_READY IMU_OK");
   } else {
@@ -53,6 +80,10 @@ void setup() {
 }
 
 void loop() {
+  wdt_reset();
+
+  read_imu_cache();
+
   if (Serial.available() > 0) {
     String cmd = Serial.readStringUntil('\n');
     cmd.trim();
@@ -86,18 +117,14 @@ void loop() {
       tiltServo.write(90);
     }
     else if (cmd == "STATUS") {
-      int16_t ax, ay, az, gx, gy, gz;
-      imu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
-      float accel_pitch = atan2(-ax, sqrt(ay * ay + az * az)) * 180.0 / PI;
-      float accel_roll = atan2(ay, az) * 180.0 / PI;
       Serial.print("PAN:");
       Serial.print(panAngle);
       Serial.print(" TILT:");
       Serial.print(tiltAngle);
       Serial.print(" IMU_PITCH:");
-      Serial.print(accel_pitch, 1);
+      Serial.print(cached_pitch, 1);
       Serial.print(" IMU_ROLL:");
-      Serial.print(accel_roll, 1);
+      Serial.print(cached_roll, 1);
       Serial.print(" IMU_YAW:0.0");
       Serial.println();
     }

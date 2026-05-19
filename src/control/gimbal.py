@@ -2,8 +2,9 @@ import time
 from typing import Optional
 
 
-AUTO_PORTS = ["/dev/ttyUSB0", "/dev/ttyACM0", "/dev/ttyAMA0",
-              "COM3", "COM4", "COM5", "COM6"]
+AUTO_PORTS = ["/dev/ttyUSB0", "/dev/ttyUSB1", "/dev/ttyACM0", "/dev/ttyACM1",
+              "/dev/ttyAMA0", "/dev/ttyS0", "/dev/ttyS1",
+              "COM3", "COM4", "COM5", "COM6", "COM7", "COM8"]
 
 
 class GimbalController:
@@ -28,6 +29,7 @@ class GimbalController:
         self.imu_roll = 0.0
         self.imu_yaw = 0.0
         self._last_write = 0.0
+        self._last_imu_poll = 0.0
         self._connect()
 
     def _connect(self):
@@ -151,9 +153,37 @@ class GimbalController:
         target = self.tilt_angle + delta
         self.set_tilt(target)
 
+    def poll_imu(self):
+        """Send STATUS command and parse IMU orientation from response (non-blocking).
+        Called periodically (every N frames) to keep IMU data fresh.
+        Uses a deferred read pattern: reads any pending response from the previous
+        STATUS call, then sends a new request. Never blocks on I/O.
+        Sets imu_pitch, imu_roll, imu_yaw on the controller instance."""
+        if not self._connected or not self._ser:
+            return
+        # Read any pending response from the previous STATUS call
+        self._read_response()
+        # Send new STATUS request
+        try:
+            self._ser.write(b"STATUS\n")
+        except Exception as e:
+            print(f"IMU poll failed: {e}")
+
     def home(self):
         self.set_pan(90)
         self.set_tilt(90)
+
+    def home_immediate(self):
+        """Send HOME command directly to Arduino, bypassing smooth_move.
+        Used during cleanup to ensure gimbal returns to center immediately
+        regardless of current angle."""
+        if self._ser and self._connected:
+            try:
+                self._ser.write(b"HOME\n")
+            except Exception as e:
+                print(f"Serial write failed during home_immediate: {e}")
+        self.pan_angle = 90
+        self.tilt_angle = 90
 
     def status(self) -> str:
         return (f"PAN:{self.pan_angle} TILT:{self.tilt_angle} "
@@ -168,5 +198,4 @@ class GimbalController:
             self._ser = None
             self._connected = False
 
-    def __del__(self):
-        self.close()
+
