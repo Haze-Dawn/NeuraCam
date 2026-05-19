@@ -153,21 +153,41 @@ Gimbal Camera/
 └── environment.yml
 ```
 
-## Quick Start
+## Datasets
+
+This project uses two datasets — one public (WIDER Face) and one self-collected (gesture SVM).
+
+### WIDER Face
+
+**32,203 images, 393,703 labeled faces** across 61 event classes (parades, protests, concerts, sports, interviews, swimming, etc). Covers extreme variation in scale (10px to full-frame), pose (frontal to profile), occlusion, illumination, and background clutter.
+
+Split: 40% training (12,880 images), 10% validation (3,220), 50% test (16,103, ground truth withheld). Each image averages 12.2 faces across Easy (large frontal), Medium (moderate occlusion), and Hard (extreme occlusion, <30px faces, extreme poses) difficulty levels.
+
+Training uses 128x128 crop-based sampling: positive crops centered on face annotations (with random jitter), negative crops from background at 3:1 ratio, plus full-frame hard-negative mining. Multi-scale training varies crop size 96-192px per epoch. Annotations are encoded as Gaussian heatmaps (sigma=1.5) for smoother gradient signals.
+
+### Gesture SVM Dataset
+
+Self-collected, 750+ HOG feature vectors (3 subjects, 50 samples per gesture). 1764-dim HOG per sample → PCA-reduced to 80 components. Collection script captures the hand ROI at 64x64, extracts HOG features, and saves to CSV with label 0-4.
+
+### Download & Setup
 
 ```bash
-# 1. Setup environment (uses pyenv; requires Python 3.10+)
-pip install -r requirements.txt
+# WIDER Face (Kaggle, 2.1GB)
+# https://www.kaggle.com/datasets/iamprateek/wider-face-a-face-detection-dataset
+# Extract to data/face/widerface/ so that:
+#   data/face/widerface/WIDER_train/images/0--Parade/*.jpg
+#   data/face/widerface/WIDER_val/images/0--Parade/*.jpg
+#   data/face/widerface/wider_face_split/wider_face_train_bbx_gt.txt
 
-# 2. Download WIDER Face dataset
-#    https://www.kaggle.com/datasets/iamprateek/wider-face-a-face-detection-dataset
-#    Extract to data/face/widerface/ so that:
-#      data/face/widerface/WIDER_train/images/0--Parade/*.jpg
-#      data/face/widerface/WIDER_val/images/0--Parade/*.jpg
-#      data/face/widerface/wider_face_split/wider_face_train_bbx_gt.txt
+# Gesture data collection (run this, then press keys 0-4 to label)
+python src/training/collect_gesture_data.py --output data/gesture/raw/features.csv
+```
 
-# 3. Train face CNN (v3.3 — FocalLoss + sigma=1.5 + full-frame mining + min F1 guard + multi-scale + grad clip)
-#    RTX 2060 + Ryzen: ~30s/epoch, ~30 min for 50 epochs
+### Face CNN
+
+RTX 2060 + Ryzen: ~30s/epoch, ~30 min for 50 epochs. CPU: ~20-30 min total.
+
+```bash
 PYTHONPATH="." python src/training/train_face_cnn.py \
     --data data/face/widerface \
     --output models/face_cnn.pth \
@@ -175,48 +195,43 @@ PYTHONPATH="." python src/training/train_face_cnn.py \
     --sigma 1.5 --focal-gamma 2.0 --focal-alpha 0.25 --min-f1 0.08 \
     --ema-decay 0.999 --amp --multiscale
 
-# 3b. Resume from checkpoint
+# Resume from 32/50 checkpoint
 PYTHONPATH="." python src/training/train_face_cnn.py \
     --data data/face/widerface \
     --output models/face_cnn.pth \
     --epochs 50 \
     --resume models/face_cnn_epoch_32.pth
+```
 
-# 3c. Multi-scale with custom sizes (faster, 4 sizes instead of 7)
-PYTHONPATH="." python src/training/train_face_cnn.py \
-    --data data/face/widerface \
-    --output models/face_cnn.pth \
-    --epochs 50 --batch-size 128 --lr 0.001 \
-    --sigma 1.5 --focal-gamma 2.0 --focal-alpha 0.25 --min-f1 0.08 \
-    --ema-decay 0.999 --amp --multiscale \
-    --multiscale-sizes 96 128 160 192
+### Gesture SVM
 
-# 3d. CPU training (no AMP, smaller batch)
-PYTHONPATH="." python src/training/train_face_cnn.py \
-    --data data/face/widerface \
-    --output models/face_cnn.pth \
-    --epochs 50 --batch-size 64 --lr 0.001 \
-    --sigma 1.5 --focal-gamma 2.0 --focal-alpha 0.25 --min-f1 0.08 \
-    --multiscale
+Optional — the rule-based fallback works without it.
 
-# 4. Collect face data (optional — fine-tune on your own camera/subject)
-python src/training/collect_face_data.py
-
-# 5. Collect gesture data (optional — rule-based fallback works without it)
+```bash
+# 1. Collect data (hold hand in frame, press 0-4 to label)
 python src/training/collect_gesture_data.py --output data/gesture/raw/features.csv
 
-# 6. Train gesture SVM (optional)
+# 2. Train SVM (~5s)
 python src/training/train_gesture.py \
     --data data/gesture/raw/features.csv \
     --output models --pca-components 80
+```
 
-# 7. Flash firmware (Arduino IDE)
-#    Open firmware/arduino_gimbal/arduino_gimbal.ino
-#    Install MPU6050 library via Library Manager
-#    Upload to Arduino Nano
+### Face Fine-Tuning (Optional)
 
-# 8. Run
+```bash
+python src/training/collect_face_data.py
+```
+
+### 4. Flash Arduino Firmware
+
+Open `firmware/arduino_gimbal/arduino_gimbal.ino` in Arduino IDE, install MPU6050 library, upload to Nano.
+
+### 5. Run
+
+```bash
 python src/main.py --config config/default.yaml
+```
 ```
 
 ### Controls (while running)
@@ -226,11 +241,16 @@ python src/main.py --config config/default.yaml
 - `r` — toggle video recording
 
 ### Gesture Controls
-| Gesture | Hold Time | Action |
-|---|---|---|
-| Open palm 🖐 | ~1s (5 frames) | Lock tracking |
-| Fist ✊ | ~1s | Resume tracking |
-| Thumbs up 👍 | ~1s | Home gimbal |
+| Gesture | Hold Time | Action | Available In |
+|---|---|---|---|
+| Open palm 🖐 | ~1s | Lock tracking | TRACKING, TRACKING_HAND |
+| Fist ✊ | ~1s | Resume tracking | LOCKED (returns to prior mode) |
+| Thumbs up 👍 | ~1s | Home gimbal | Any mode |
+| Peace ✌️ | ~1s | Toggle squeeze-zoom mode | TRACKING, TRACKING_HAND, LOCKED |
+| Point ☝️ | ~1s | Toggle face/hand tracking | TRACKING, TRACKING_HAND |
+
+### Squeeze Zoom
+While zoom mode is active (activated by Peace), close your hand into a fist to zoom in, open it to zoom out. Zoom ranges from 1x (open palm) to 3x (fist). The digital zoom crops the center of the frame and rescales to full resolution.
 
 ## Evaluation & Analysis
 
