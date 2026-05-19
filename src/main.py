@@ -175,7 +175,9 @@ def run(cfg: Config = None):
 
     time.sleep(1.0)
 
-    print("System ready. Controls: q=quit, h=home, space=lock, r=record")
+    print("System ready. Controls: q=quit, h=home, space=lock, r=record, "
+          "gestures: POINT=toggle hand/face track, PEACE=toggle zoom, "
+          "squeeze hand to zoom in/out")
 
     while running and not _shutdown_requested:
         profiler.mark("capture")
@@ -226,15 +228,56 @@ def run(cfg: Config = None):
                 else:
                     state_machine.mode = Mode.SEARCH
 
+        # Hand detection: every frame when tracking hand or zoom active
+        hand_roi = None
+        hand_bbox = None
+        hand_detected = False
+        should_detect_hand = (
+            state_machine.mode in (Mode.TRACKING_HAND, Mode.LOCKED)
+            or state_machine.zoom_mode_active
+        )
+        if should_detect_hand:
+            hand_result = hand_detector.detect(
+                frame, face_bbox=face.bbox if face else None
+            )
+            if hand_result:
+                hand_roi, hand_bbox = hand_result
+                hand_detected = True
+                state_machine.update_hand_status(True)
+            else:
+                state_machine.update_hand_status(False)
+
+        # Face tracking PID
         if state_machine.mode == Mode.TRACKING and face:
             profiler.mark("pid")
             if cfg.pid.dead_zone_adaptive:
                 dead_zone = compute_adaptive_dead_zone(face.bbox, (w, h))
             else:
                 dead_zone = cfg.pid.dead_zone_base
-
             error_x, error_y = compute_framing_error(
                 face.bbox, (w, h), dead_zone
+            )
+            delta_pan = pid_pan.update(error_x, frame_dt)
+            delta_tilt = pid_tilt.update(error_y, frame_dt)
+            gimbal.set_pan_delta(delta_pan)
+            gimbal.set_tilt_delta(delta_tilt)
+            profiler.mark("pid")
+
+        # Hand tracking PID
+        elif state_machine.mode == Mode.TRACKING_HAND and hand_detected:
+            profiler.mark("pid")
+            if cfg.pid.dead_zone_adaptive:
+                dead_zone = compute_adaptive_dead_zone(
+                    BoundingBox(x=hand_bbox[0], y=hand_bbox[1],
+                                w=hand_bbox[2], h=hand_bbox[3]),
+                    (w, h)
+                )
+            else:
+                dead_zone = cfg.pid.dead_zone_base
+            error_x, error_y = compute_framing_error(
+                BoundingBox(x=hand_bbox[0], y=hand_bbox[1],
+                            w=hand_bbox[2], h=hand_bbox[3]),
+                (w, h), dead_zone
             )
             delta_pan = pid_pan.update(error_x, frame_dt)
             delta_tilt = pid_tilt.update(error_y, frame_dt)
@@ -254,23 +297,35 @@ def run(cfg: Config = None):
             pid_pan.reset()
             pid_tilt.reset()
 
+        # Gesture classification every 6th frame
         gesture_result = None
-
         if frame_count % 6 == 0 and state_machine.mode in (
-                Mode.TRACKING, Mode.LOCKED):
+                Mode.TRACKING, Mode.TRACKING_HAND, Mode.LOCKED):
             profiler.mark("gesture")
-            hand_roi = hand_detector.detect(
-                frame, face_bbox=face.bbox if face else None
-            )
-            if hand_roi:
-                roi, _ = hand_roi
-                gesture_result = gesture_classifier.predict(roi)
+            if hand_roi is not None:
+                gesture_result = gesture_classifier.predict(hand_roi)
                 state_machine.process_gesture(gesture_result.gesture)
             profiler.mark("gesture")
 
+        # Squeeze zoom: update every frame when zoom mode is active
+        if state_machine.zoom_mode_active and hand_roi is not None:
+            defect_count = gesture_classifier.compute_defect_count(hand_roi)
+            state_machine.update_hand_zoom(defect_count)
+
+        # Apply digital zoom for display
+        display_frame = frame
+        if state_machine.zoom_level > 1.0:
+            zoom = state_machine.zoom_level
+            new_w = int(w / zoom)
+            new_h = int(h / zoom)
+            x1 = (w - new_w) // 2
+            y1 = (h - new_h) // 2
+            display_frame = frame[y1:y1+new_h, x1:x1+new_w]
+            display_frame = cv2.resize(display_frame, (w, h))
+
         profiler.mark("display")
         overlay = draw_debug_overlay(
-            frame=frame,
+            frame=display_frame,
             face=face,
             gesture=gesture_result,
             mode=state_machine.mode,
@@ -279,6 +334,8 @@ def run(cfg: Config = None):
             gimbal_angles=(gimbal.pan_angle, gimbal.tilt_angle),
             imu_angles=(gimbal.imu_pitch, gimbal.imu_roll, gimbal.imu_yaw),
             kalman_uncertainty=kalman_tracker.uncertainty,
+            zoom_level=state_machine.zoom_level,
+            tracking_target=state_machine.tracking_target,
         )
 
         recorder.write_frame(overlay)
@@ -298,6 +355,8 @@ def run(cfg: Config = None):
                 "fps": current_fps,
                 "gesture": gesture_result.gesture if gesture_result else None,
                 "kalman_uncertainty": kalman_tracker.uncertainty,
+                "zoom_level": state_machine.zoom_level,
+                "tracking_target": state_machine.tracking_target,
                 "latency_ms": latency,
             }
             logger.log(log_entry)

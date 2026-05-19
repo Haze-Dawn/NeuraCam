@@ -92,6 +92,7 @@ class GestureClassifier:
         self.scaler = None
         self.pca = None
         self.hog = cv2.HOGDescriptor((64, 64), (16, 16), (8, 8), (8, 8), 9)
+        self.last_defect_count = 0
 
         if svm_path:
             try:
@@ -108,6 +109,27 @@ class GestureClassifier:
                 self.pca = joblib.load(pca_path)
             except Exception as e:
                 print(f"Failed to load PCA: {e}")
+
+    def compute_defect_count(self, roi: np.ndarray) -> int:
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        _, thresh = cv2.threshold(gray, 60, 255, cv2.THRESH_BINARY)
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL,
+                                        cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return 0
+        hand_contour = max(contours, key=cv2.contourArea)
+        hull = cv2.convexHull(hand_contour, returnPoints=False)
+        if hull.ndim == 1 or len(hull) < 3:
+            return 0
+        defects = cv2.convexityDefects(hand_contour, hull)
+        if defects is None:
+            return 0
+        count = 0
+        for i in range(defects.shape[0]):
+            s, e, f, d = defects[i, 0]
+            if d > 15000:
+                count += 1
+        return count
 
     def predict(self, hand_roi: np.ndarray) -> GestureResult:
         roi = cv2.resize(hand_roi, (64, 64))
@@ -132,29 +154,19 @@ class GestureClassifier:
         return GestureResult(gesture, 0.9, "rule")
 
     def _rule_based(self, roi: np.ndarray) -> str:
+        self.last_defect_count = self.compute_defect_count(roi)
+        defect_count = self.last_defect_count
+
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
         _, thresh = cv2.threshold(gray, 60, 255, cv2.THRESH_BINARY)
-
         contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL,
                                        cv2.CHAIN_APPROX_SIMPLE)
-        if not contours:
-            return "NONE"
-
-        hand_contour = max(contours, key=cv2.contourArea)
-        hull = cv2.convexHull(hand_contour, returnPoints=False)
-        if hull.ndim == 1 or len(hull) < 3:
-            return "NONE"
-
-        defects = cv2.convexityDefects(hand_contour, hull)
-        defect_count = 0
-        if defects is not None:
-            for i in range(defects.shape[0]):
-                s, e, f, d = defects[i, 0]
-                if d > 15000:
-                    defect_count += 1
-
-        x, y, w, h = cv2.boundingRect(hand_contour)
-        aspect_ratio = h / max(w, 1)
+        if contours:
+            hand_contour = max(contours, key=cv2.contourArea)
+            x, y, w, h = cv2.boundingRect(hand_contour)
+            aspect_ratio = h / max(w, 1)
+        else:
+            aspect_ratio = 1.0
 
         if defect_count >= 4:
             return "OPEN_PALM"
