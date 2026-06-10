@@ -1,50 +1,62 @@
-# AI Smart Gimbal Camera — NeuraCam
+# NeuraCam
 
-A 2-axis computer vision gimbal that tracks faces, recognizes hand gestures, and repositions a USB webcam using servo motors. Built for ENGR 422 — Computer Vision Capstone.
+An AI-powered 2-axis face-tracking webcam on a gimbal. Tracks faces, recognizes hand gestures, and repositions a USB webcam using servo motors. Built for ENGR 422 — Computer Vision.
 
 ## What It Does
 
-A USB webcam streams 1280×720 video to a host PC running face detection (custom 4-block FCN v3.2, 140K params, FPN skip connection, dilated block4, trained on WIDER Face), 8-state Kalman filter tracking, and 5-gesture recognition (SVM cascade + rule-based fallback). An Arduino Nano drives two EMAX ES08MAII servo motors (pan/tilt) via PID control with adaptive dead zone. An MPU6050 IMU provides closed-loop orientation feedback. Gestures require a 1-second hold to trigger. On face loss, the gimbal performs a 180° search sweep before returning to center.
+A USB webcam streams 1280×720 video to a host PC running face detection (FaceCNN V0, 186K params), 8-state Kalman filter tracking, and 5-gesture recognition (SVM cascade + rule-based fallback). An Arduino Nano drives two EMAX ES08MAII servo motors (pan/tilt) via PID control with adaptive dead zone. An MPU6050 IMU provides closed-loop orientation feedback. Gestures require a 1-second hold to trigger. On face loss, the gimbal performs a 180° search sweep before returning to center.
 
 ```
-                     ┌─────────────────────────────────────┐
-                     │           HOST PC                    │
-                     │  FaceCNN → Kalman → PID → serial    │
-                     │  + latency profiler, SEARCH mode,    │
-                     │  gesture hold timeout, soft endstops │
-                     └───────┬─────────────────────┬────────┘
-                             │                     │
-                             ▼                     ▼
-                     ┌──────────────┐     ┌──────────────────┐
-                     │ USB Webcam   │     │   Arduino Nano   │
-                     │ 1280×720     │     │  Servo + MPU6050 │
-                     │ (capture     │     │  + combined cmd  │
-                     │  thread)     │     │  parsing         │
-                     └──────────────┘     └───┬──────┬───────┘
-                                               │      │
-                                     ┌─────────┘      └─────────┐
-                                     ▼                          ▼
-                              ┌──────────┐             ┌──────────────┐
-                               │ ES08MAII │             │ MPU6050 IMU  │
-                              │ Pan/Tilt │             │ (orientation)│
-                              │ + soft   │             └──────────────┘
-                              │ endstops │
-                              └──────────┘
+                      ┌─────────────────────────────────────┐
+                      │           HOST PC                    │
+                      │  FaceCNN → Kalman → PID → serial    │
+                      │  + latency profiler, SEARCH mode,    │
+                      │  gesture hold timeout, soft endstops │
+                      └───────┬─────────────────────┬────────┘
+                              │                     │
+                              ▼                     ▼
+                      ┌──────────────┐     ┌──────────────────┐
+                      │ USB Webcam   │     │   Arduino Nano   │
+                      │ 1280×720     │     │  Servo + MPU6050 │
+                      │ (capture     │     │  + combined cmd  │
+                      │  thread)     │     │  parsing         │
+                      └──────────────┘     └───┬──────┬───────┘
+                                                │      │
+                                      ┌─────────┘      └─────────┐
+                                      ▼                          ▼
+                               ┌──────────┐             ┌──────────────┐
+                                │ ES08MAII │             │ MPU6050 IMU  │
+                               │ Pan/Tilt │             │ (orientation)│
+                               │ + soft   │             └──────────────┘
+                               │ endstops │
+                               └──────────┘
 ```
 
 ## Features
 
 ### Detection & Tracking
-- **Custom FaceCNN (v3.2)** — 4-block fully-convolutional network (140K params, 160M FLOPs) with FPN-style skip connection (block3→1×1 conv → concat with block4), dilated convolution in block4 (dilation=2, RF 56×56 vs 40×40), trained from scratch on WIDER Face (393K faces). Trained with FocalLoss, Gaussian sigma=1.5, full-frame hard-negative mining, GIoU bbox loss, Model EMA weight averaging, and mixed-precision AMP.
-- **Score averaging across pyramid scales (v3.2)** — groups overlapping detections across all 5 scales, averages confidence per group, reducing frame-to-frame jitter.
-- **Multi-face safe confidence ratio filter (v3.2)** — suppresses false positives below 30% of max confidence but exempts detections that belong to a different face (IoU < 0.1 with max-confidence face).
+
+The primary architecture is **FaceCNN V0** (final, production-ready). Earlier generations (v3–v7) were developmental iterations that informed the V0 design; they are documented in the project report but are not deployable.
+
+**FaceCNN V0 (production, 186K params):**
+- **Final architecture** — synthesises every lesson from v3 through v7 into a compact 186K-parameter design. 11 depthwise separable conv blocks (channel progression 32→64→128), 4 MaxPool downsampling stages, 3-level FPN at strides 8, 16, 32.
+- **Independent per-scale detection heads** — NO shared weights between FPN levels, eliminating v7's gradient cancellation. Each level has its own Cls(1)+Obj(1)+BBox(4) predictor with 1×1 projection + 3×3 depthwise convolution.
+- **Training**: FocalLoss (γ=2.0, α=0.75) + 5×EIoU loss. Radius-based multi-positive target assignment (centre radius 2.5 cells). RandomSquareCrop (0.3×–1.5×) + HSV jitter + horizontal flip augmentation. AdamW (lr=10⁻³), cosine annealing with 5-epoch warmup, gradient clipping at norm 10.0, ModelEMA (decay 0.999).
+- **Performance**: mAP@0.5 = 0.169 on 500-image WIDER Face subset. 62 FPS (16ms) in ONNX FP32 on Ryzen 7 3800X CPU. ONNX INT8 quantized variant reduces model to 272 KB.
+- **Headroom**: Simplified peak-finding post-processing leaves substantial headroom for improvement with a production-grade anchor-based decoder.
+
+**Architecture generations (v3–v7, developmental):**
+- **v7 (519K)** — shared-weight head design. P4 F1=0.611 (best single-level) but P3 dead at F1=0.007 from epoch 3 due to gradient cancellation in shared convolutions.
+- **v6 (394K)** — fixed v5's BN bug. P4 F1=0.52–0.58 with progressive FPN gating. Same 325-parameter head limitation as v5.
+- **v5 (394K)** — full-frame anchor-free FPN. P4 F1=0.525 on paper, but ModelEMA BN bug + bias entrapment meant the saved checkpoint produced zero detections at inference.
+- **v4 (62K)** — depthwise separable convolutions, anchor head. Capped at F1=0.084 due to crop-based training (never learned background rejection).
+- **v3 (140K)** — first FPN skip connection. ~0.05 F1, too slow for real-time.
+
+**Tracking pipeline:**
 - **8-state Kalman filter** — constant-velocity model (cx, cy, w, h, vx, vy, vw, vh) with IoU-based matching, sub-pixel smoothing, occlusion prediction (up to 5 lost frames)
-- **Confidence-based scale skipping** — skips smaller pyramid scales when detection confidence ≥ 0.9, achieving ~40 FPS on high-confidence frames
-- **Multi-scale pyramid** — 5 scales (1.0 → 0.57), detects faces from 1m to 4.5m
-- **TorchScript JIT optimized (v3.2)** — forward pass compiled via `torch.jit.script()`, fusing Conv2d+BN+ReLU into single kernels. ~15% CPU speedup, graceful fallback if compilation fails.
 
 ### Gesture Control
-- **Pose gestures**: OPEN_PALM (lock), FIST (unlock), THUMBS_UP (home). POINT and PEACE classified but no action.
+- **Pose gestures**: OPEN_PALM (lock), FIST (unlock), THUMBS_UP (home). POINT and PEACE classified but no action — they exist only to improve SVM decision boundaries by providing intermediate finger-count classes (see docs).
 - **Wave gesture**: Wave hand side-to-side to toggle face tracking ↔ hand tracking. Double-wave to toggle zoom mode in hand-tracking mode.
 - **Squeeze zoom**: Close hand to zoom in (3x), open to zoom out (1x). Continuous control via convexity defect count.
 - **Two-method cascade**: HOG+PCA+SVM (90-95% accuracy) → rule-based convexity defects (85% accuracy, always works)
@@ -56,7 +68,7 @@ A USB webcam streams 1280×720 video to a host PC running face detection (custom
 - **Discrete PID** with anti-windup clamping, derivative low-pass filtering, adaptive dead zone (2-10%, face-size proportional)
 - **Software endstops** — `smooth_move()` progressively slows servo as it approaches mechanical limits (crawl at 10% speed within 2°)
 - **Batched serial** — `P:{pan} T:{tilt}\n` format, rate-limited to 100Hz, ~1ms transmit time at 115200 baud
-- **6-state behavioral machine**: IDLE → TRACKING → LOCKED ↔ TRACKING, TRACKING_HAND, plus HOME and SEARCH
+- **6-state behavioral machine**: IDLE → TRACKING → LOCKED ↔ TRACKING, plus TRACKING_HAND (wave toggled), HOME, and SEARCH sweep
 - **SEARCH mode** — on face loss, sweeps 0°→180° over 3 seconds to re-acquire before entering IDLE
 
 ### Performance & Monitoring
@@ -100,27 +112,37 @@ Arduino libraries: `Servo.h` (built-in), `MPU6050` (install via Library Manager)
 ## Project Structure
 
 ```
-Gimbal Camera/
+NeuraCam/
 ├── config/default.yaml              # All tunable parameters
 ├── firmware/arduino_gimbal/         # Arduino servo + IMU firmware
 ├── CAD/                             # Blender 3D gimbal design files
 │   ├── Main.blend                   # Gimbal assembly
+│   ├── Gimbal.stl                   # Export STL for printing
 │   └── Assists/                     # Component reference models
+│   # NOTE: CAD files are managed upstream. Do NOT modify or delete them.
+│   # Blender .blend1 files are auto-save backups from Blender, not source files.
+│   # For the latest STL exports and assembly drawings, see the GitHub repo:
+│   #   https://github.com/Haze-Dawn/NeuraCam
 ├── Servo Testing/                   # Standalone servo test sketches
 ├── src/
 │   ├── main.py                      # Entry point, capture thread, control loop
 │   ├── capture/camera.py            # Camera class (capture thread + Frame dataclass)
 │   ├── capture/recorder.py          # MP4 video recorder
-│   ├── cv/face_detector_cnn.py      # FaceCNN (4-block FCN) + multi-scale detection
-│   ├── cv/face_tracker.py           # KalmanTracker, BoundingBox, Face dataclasses
+│   ├── cv/face_detector_cnn.py      # FaceCNN v4.0, v5.0, v7.1 inference wrappers
+│   ├── cv/face_detector_v7.py       # FaceFCNv7 architecture (519K, shared-head)
+│   ├── cv/face_detector_v71.py      # FaceFCNv7_1 architecture (504K, stride-4, head checkpointing)
+│   ├── cv/face_detector_v8.py       # FaceFCNv8 architecture (DFL+Varifocal+BiFPN, design)│   ├── cv/face_tracker.py           # KalmanTracker, BoundingBox, Face dataclasses
 │   ├── cv/gesture_classifier.py     # HandDetector + GestureClassifier (SVM + rule)
 │   ├── control/gimbal.py            # GimbalController (serial, smooth_move, soft endstops)
 │   ├── control/pid.py               # PIDController (adaptive dead zone, anti-windup)
-│   ├── control/state_machine.py     # 5-state machine (IDLE/TRACKING/LOCKED/HOME/SEARCH)
-│   ├── training/train_face_cnn.py   # FaceCNN training (convergence detector, full metrics)
+│   ├── control/state_machine.py     # 6-state machine (IDLE/TRACKING/TRACKING_HAND/LOCKED/HOME/SEARCH)
+│   ├── training/train_v71.py        # FaceCNN v7.1 training (ATSS + Varifocal + EIoU + checkpointing)
+│   ├── training/train_v7.py         # FaceCNN v7.0 training (shared-head)
+│   ├── training/train_face_cnn.py   # FaceCNN v4.0/v5.0 training (convergence detector, full metrics)
 │   ├── training/train_gesture.py    # Gesture SVM training (GridSearchCV + PCA)
-│   ├── training/collect_gesture_data.py  # Interactive gesture data collection
+│   ├── training/collect_gesture_data.py  # Auto-capture gesture HOG data (countdown + continuous)
 │   ├── training/collect_face_data.py     # Face crop collection for fine-tuning
+│   ├── evaluation/benchmark_face_v71.py       # V7.1 cross-device benchmark
 │   ├── evaluation/evaluate_face.py       # Face detection rate evaluation
 │   ├── evaluation/evaluate_face_map.py   # WIDER Face mAP against ground truth
 │   ├── evaluation/evaluate_baselines.py  # Haar + MediaPipe comparison
@@ -150,6 +172,7 @@ Gimbal Camera/
 ├── reports/logs/                    # Evaluation results (JSON)
 ├── reports/figures/                 # Generated plots (PDF)
 ├── experiments/                     # Live session logs (JSON)
+├── scripts/calibrate_v71_bn.py     # Post-training BN calibration
 ├── scripts/setup.sh                 # Automated environment setup
 ├── TECHNICAL_CHANGELOG.md           # Comprehensive changelog of all fixes and additions
 ├── requirements.txt
@@ -170,7 +193,7 @@ Training uses 128x128 crop-based sampling: positive crops centered on face annot
 
 ### Gesture SVM Dataset
 
-Self-collected, 750+ HOG feature vectors (3 subjects, 50 samples per gesture). 1764-dim HOG per sample → PCA-reduced to 80 components. Collection script captures the hand ROI at 64x64, extracts HOG features, and saves to CSV with label 0-4.
+Self-collected, 1500 HOG feature vectors (1 subject, both hands, 150 samples per gesture per hand). 1764-dim HOG per sample → PCA-reduced to 80 components. Collection script auto-captures the hand ROI at 64x64 with countdown timers, cycling through all 5 gestures for right then left hand. Training on 500 samples (50/gesture/hand) yielded 89% validation accuracy; scaling to 1500 (150/gesture/hand) reached 97%.
 
 ### Download & Setup
 
@@ -186,131 +209,37 @@ Self-collected, 750+ HOG feature vectors (3 subjects, 50 samples per gesture). 1
 python src/training/collect_gesture_data.py --output data/gesture/raw/features.csv
 ```
 
-### Face CNN
-
-RTX 2060 + Ryzen: ~30s/epoch, ~30 min for 50 epochs. CPU: ~20-30 min total.
-
-```bash
-PYTHONPATH="." python src/training/train_face_cnn.py \
-    --data data/face/widerface \
-    --output models/face_cnn.pth \
-    --epochs 50 --batch-size 128 --lr 0.001 \
-    --sigma 1.5 --focal-gamma 2.0 --focal-alpha 0.25 --min-f1 0.08 \
-    --ema-decay 0.999 --amp --multiscale
-
-# Resume from 32/50 checkpoint
-PYTHONPATH="." python src/training/train_face_cnn.py \
-    --data data/face/widerface \
-    --output models/face_cnn.pth \
-    --epochs 50 \
-    --resume models/face_cnn_epoch_32.pth
-```
-
-### Gesture SVM
-
-Optional — the rule-based fallback works without it.
-
-```bash
-# 1. Collect data (hold hand in frame, press 0-4 to label)
-python src/training/collect_gesture_data.py --output data/gesture/raw/features.csv
-
-# 2. Train SVM (~5s)
-python src/training/train_gesture.py \
-    --data data/gesture/raw/features.csv \
-    --output models --pca-components 80
-```
-
-### Face Fine-Tuning (Optional)
-
-```bash
-python src/training/collect_face_data.py
-```
-
-### 4. Flash Arduino Firmware
-
-Open `firmware/arduino_gimbal/arduino_gimbal.ino` in Arduino IDE, install MPU6050 library, upload to Nano.
-
-### 5. Run
-
-```bash
-python src/main.py --config config/default.yaml
-```
-```
-
-### Controls (while running)
-- `q` — quit
-- `h` — home gimbal
-- `Space` — toggle tracking lock
-- `r` — toggle video recording
-
-### Gesture Controls
-| Gesture / Action | Trigger | Action | Available In |
-|---|---|---|---|
-| Open palm 🖐 | Hold ~1s | Lock tracking | TRACKING, TRACKING_HAND |
-| Fist ✊ | Hold ~1s | Resume tracking | LOCKED (returns to prior mode) |
-| Thumbs up 👍 | Hold ~1s | Home gimbal | Any mode |
-| Single wave 👋 | Wave hand side-to-side | Toggle face/hand tracking | TRACKING, TRACKING_HAND |
-| Double wave 👋👋 | Two waves in ~1.5s | Toggle zoom mode | TRACKING_HAND |
-| Squeeze ✊→🖐 | Continuous (no hold) | Control zoom (3x→1x) | TRACKING_HAND (zoom active) |
-
-### How Wave Detection Works
-The system tracks your hand's horizontal position over ~1.5 seconds. When it detects 2+ lateral direction changes with sufficient amplitude (>8% of frame width), it registers a wave. Two waves within 1.5 seconds is a double-wave. This is motion-based, not pose-based — any hand movement works, no specific gesture needed.
-
-### Squeeze Zoom
-When tracking your hand (activated by a single wave), zoom is active by default. Close your hand into a fist to zoom in (up to 3x), open it to zoom out. Double-wave to toggle zoom on/off independently. The digital zoom crops the center of the frame and rescales to full resolution.
-
-## Evaluation & Analysis
-
-```bash
-# Generate 14 training plots (PDF)
-PYTHONPATH="." python src/evaluation/plot_training.py
-
-# WIDER Face mAP against ground truth
-PYTHONPATH="." python src/evaluation/evaluate_face_map.py
-
-# Baseline comparison (Haar + MediaPipe vs FaceCNN)
-PYTHONPATH="." python src/evaluation/evaluate_baselines.py
-
-# Ablation study (3 epochs per variant for quick test)
-PYTHONPATH="." python src/evaluation/run_ablations.py --quick
-
-# PID tuning sweep
-PYTHONPATH="." python src/evaluation/tune_pid.py
-
-# System benchmark (requires webcam)
-PYTHONPATH="." python src/evaluation/evaluate_system.py --duration 60
-```
-
-## Training Pipelines
-
-| Model | Type | Training Data | Time | Output |
-|---|---|---|---|---|
-| Face FCN v3.2 | 4-block FCN + FPN skip, 140K params | WIDER Face (32K images, 393K faces) | ~25 min GPU (RTX 2060, AMP) | `models/face_cnn_best.pth` |
-| Face FCN (fine-tune) | Custom webcam data | Self-collected (50-500 images) | ~5 min | `models/face_cnn_finetuned.pth` |
-| Gesture SVM | HOG+PCA+RBF | Self-collected (750 samples, 3 subjects) | ~5s CPU | `models/gesture_{svm,pca,scaler}.pkl` |
-| Gesture fallback | Convexity defects | None | — | Always works, ~85-90% accuracy |
+| Model | Type | Params | Training | Inference | Output |
+|---|---|---|---|---|---|---|
+| **FaceCNN V0** (production) | 11-block DSConv + 3-level FPN, independent heads | **186K** | **WIDER Face, 350 ep, FocalLoss + EIoU, RSC aug** | **62 FPS ONNX (16ms) on Ryzen 3800X** | `models/face_cnn_v0/face_cnn_v0.onnx` |
+| FaceFCN v7 | 16-block shared-head | 519K | WIDER Face, 350 ep, Phase 1 | ~40ms PyTorch | `models/face_cnn_v7_ep*.pth` |
+| FaceFCN v5 | Full-frame FPN + anchor-free | 394K | WIDER Face, 100 ep | ~30ms PyTorch (zero detections at inference) | `models/face_cnn_v5_best.pth` |
+| Gesture SVM v6 | RF detection + HOG+SVM cascade | N/A | HAGrid 512px + BG crops | <1ms CPU | `models/gesture_svm.pkl` |
 
 ## Key Specs
 
 | Parameter | Value |
 |---|---|
-| Control loop rate | ~6-20 Hz (50-160ms) |
-| Face detection FPS | ~21 FPS (47ms without TorchScript), ~25 FPS (~38ms with TorchScript JIT), ~40 FPS with scale skipping |
+| Face detection architecture | FaceCNN V0 — 186K params, 0.32 GFLOPs, 11 DSConv blocks, 3-level FPN |
+| Face detection inference | 62 FPS (16ms) ONNX FP32, ~78 FPS PyTorch on Ryzen 7 3800X |
+| Model size | 0.79 MB FP32 ONNX, 272 KB INT8 ONNX |
+| Detection metric | mAP@0.5 = 0.169 on 500-image WIDER Face val subset |
+| Control loop rate | ~25–31 Hz (32–40ms) |
 | Pan range | ±90 degrees (soft endstops) |
 | Tilt range | ±45 degrees (soft endstops) |
-| Camera resolution | 1280×720 capture, 640×480 detection |
-| Face detection | 4-block FCN v3.2, 140K params, 160M FLOPs, RF 56×56, FPN skip, dilated block4 |
+| Camera resolution | 1280×720 capture; 640×480 detection |
 | Face tracking | 8-state Kalman filter (IoU match + velocity) |
 | PID dead zone | Adaptive: 2-10% (face-size proportional) |
-| Gesture accuracy | SVM: 90-95%, Rule-based: 85% |
-| Gesture hold time | ~1 second (5 frames at 5fps) |
+| Gesture accuracy | SVM: 96.44% (HAGrid 512px test), RF detection: 96.03% F1 |
+| Gesture vocabulary | 5 static poses (OPEN_PALM, FIST, THUMBS_UP, POINT, PEACE) + wave motion |
 | Serial format | Batched P:{pan} T:{tilt}\n at 100Hz |
 | Serial baud | 115200 |
-| State machine | 5 modes: IDLE, TRACKING, LOCKED, HOME, SEARCH |
+| State machine | 6 modes: IDLE, TRACKING, TRACKING_HAND, LOCKED, HOME, SEARCH |
 | SEARCH sweep | 180° pan over 3 seconds on face loss |
-| FLOPs (training) | 160M FLOPs/sample → 6.1 TFLOPs/epoch → 305 TFLOPs total |
-| FLOPs (inference) | 9.09 GFLOPs at 640×480 (5 scales, +0.8% from v2.0 FPN convs) |
-| Model size | 140,420 params, ~563 KB (state dict) |
+| Hand tracking | Wave toggles face↔hand tracking; squeeze controls zoom (1×–3×) |
+| Digital zoom | Defect-count controlled: 0 defects = 3×, 4 defects = 1× |
+| IMU feedback | MPU6050 pitch/roll via I2C, cached at 10Hz, polled via STATUS command |
+| Dataset | WIDER Face (32,203 images, 393,703 faces) |
 
 ## License
 

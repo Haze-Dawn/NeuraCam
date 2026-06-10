@@ -20,17 +20,41 @@ conda-env/
 *.swp
 *.swo
 
+# Rust build
+rust/target/
+
 # Data
-data/face/widerface/
-data/gesture/raw/
-data/face/custom/
+data/
+src/data/
 
 # Models
-models/*.pth
 models/*.pkl
+models/**/*_ep*.pth
+models/v6_epochs/
+models/v6_posthoc/
+models/archive/
+models/v6_diagnostics/
+models/v71_diagnostics/
+models/v7_diagnostics/
+models/v8_diagnostics/
 models/training_metrics.csv
 models/training_summary.json
 models/face_cnn_analysis/
+
+# Archive
+archive/
+
+# CAD backups
+*.blend1
+
+# Servo build dirs
+Servo Testing/servo_sweep_smooth/
+
+# PID files
+*.pid
+
+# Training logs
+*.log
 
 # Output
 output.mp4

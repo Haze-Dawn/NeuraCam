@@ -1,0 +1,2 @@
+model,mAP@0.5,mAP_coco,easy,medium,hard,small,medium_face,large,fps,mean_ms,params
+"v7 (P3+P4, 519K params)",0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,1.0,1041.2,519476

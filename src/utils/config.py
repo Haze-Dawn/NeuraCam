@@ -1,6 +1,6 @@
 import os
 import yaml
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Optional, List
 
 
@@ -27,6 +27,10 @@ class SerialConfig:
 @dataclass
 class ModelsConfig:
     face_cnn: Optional[str] = "models/face_cnn.pth"
+    face_cnn_v5: Optional[str] = "models/face_cnn_v5_best.pth"
+    face_cnn_v71: Optional[str] = "models/face_cnn_v71_best.pth"
+    face_cnn_v0: Optional[str] = "models/face_cnn_v0/face_cnn_v0.pth"
+    gesture_detector: Optional[str] = "models/gesture_detector_rf.pkl"
     gesture_pca: Optional[str] = "models/gesture_pca.pkl"
     gesture_svm: Optional[str] = "models/gesture_svm.pkl"
     gesture_scaler: Optional[str] = "models/gesture_scaler.pkl"
@@ -34,10 +38,36 @@ class ModelsConfig:
 
 @dataclass
 class FaceDetectionConfig:
+    architecture: str = "v4"
     confidence_threshold: float = 0.3
     nms_iou_threshold: float = 0.25
     input_size: int = 128
     skip_scale_threshold: float = 0.9
+    num_anchors: int = 3
+    use_depthwise: bool = True
+    use_se: bool = True
+
+
+@dataclass
+class FaceDetectionV5Config:
+    confidence_threshold: float = 0.3
+    nms_iou_threshold: float = 0.3
+
+
+@dataclass
+class FaceDetectionV7_1Config:
+    confidence_threshold: float = 0.25
+    nms_iou_threshold: float = 0.3
+    resolution_adaptive: bool = True
+    use_track_consistency_filter: bool = True
+
+
+@dataclass
+class FaceDetectionV0Config:
+    confidence_threshold: float = 0.3
+    nms_iou_threshold: float = 0.45
+    input_size: int = 640
+    backend: str = "pytorch"
 
 
 @dataclass
@@ -69,7 +99,7 @@ class PIDConfig:
 @dataclass
 class GestureConfig:
     min_confidence: float = 0.6
-    pca_components: int = 80
+    pca_components: int = 200
 
 
 @dataclass
@@ -112,6 +142,9 @@ class Config:
     serial: SerialConfig = field(default_factory=SerialConfig)
     models: ModelsConfig = field(default_factory=ModelsConfig)
     face_detection: FaceDetectionConfig = field(default_factory=FaceDetectionConfig)
+    face_detection_v5: FaceDetectionV5Config = field(default_factory=FaceDetectionV5Config)
+    face_detection_v71: FaceDetectionV7_1Config = field(default_factory=FaceDetectionV7_1Config)
+    face_detection_v0: FaceDetectionV0Config = field(default_factory=FaceDetectionV0Config)
     kalman: KalmanConfig = field(default_factory=KalmanConfig)
     pid: PIDConfig = field(default_factory=PIDConfig)
     gesture: GestureConfig = field(default_factory=GestureConfig)
@@ -139,9 +172,27 @@ def load_config(path: str = "config/default.yaml") -> Config:
     if "serial" in raw:
         cfg.serial = SerialConfig(**raw["serial"])
     if "models" in raw:
-        cfg.models = ModelsConfig(**raw["models"])
+        model_fields = {f.name for f in fields(ModelsConfig)}
+        filtered = {k: v for k, v in raw["models"].items() if k in model_fields}
+        extra = set(raw["models"].keys()) - model_fields
+        if extra:
+            import warnings
+            warnings.warn(f"Ignoring unknown model config keys: {sorted(extra)}")
+        cfg.models = ModelsConfig(**filtered)
     if "face_detection" in raw:
-        cfg.face_detection = FaceDetectionConfig(**raw["face_detection"])
+        fd_fields = {f.name for f in fields(FaceDetectionConfig)}
+        filtered = {k: v for k, v in raw["face_detection"].items() if k in fd_fields}
+        extra = set(raw["face_detection"].keys()) - fd_fields
+        if extra:
+            import warnings
+            warnings.warn(f"Ignoring unknown face_detection keys: {sorted(extra)}")
+        cfg.face_detection = FaceDetectionConfig(**filtered)
+    if "face_detection_v5" in raw:
+        cfg.face_detection_v5 = FaceDetectionV5Config(**raw["face_detection_v5"])
+    if "face_detection_v71" in raw:
+        cfg.face_detection_v71 = FaceDetectionV7_1Config(**raw["face_detection_v71"])
+    if "face_detection_v0" in raw:
+        cfg.face_detection_v0 = FaceDetectionV0Config(**raw["face_detection_v0"])
     if "kalman" in raw:
         cfg.kalman = KalmanConfig(**raw["kalman"])
     if "pid" in raw:

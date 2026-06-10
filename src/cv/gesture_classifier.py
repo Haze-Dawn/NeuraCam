@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import joblib
+import os
 from typing import Optional, Tuple
 from dataclasses import dataclass
 
@@ -22,7 +23,8 @@ class HandDetector:
                  hsv_lower: Tuple[int, int, int] = (0, 30, 60),
                  hsv_upper: Tuple[int, int, int] = (20, 150, 255),
                  min_area: int = 1000,
-                 use_motion: bool = True):
+                 use_motion: bool = True,
+                 rf_model_path: Optional[str] = None):
         self.ycrcb_lower = np.array(ycrcb_lower)
         self.ycrcb_upper = np.array(ycrcb_upper)
         self.hsv_lower = np.array(hsv_lower)
@@ -36,6 +38,24 @@ class HandDetector:
         self._pending_frame = 0
         self._wave_threshold = 0.08
         self._min_step = 0.015
+        self._scaler = None
+        self._pca = None
+        self._hog = None
+
+        self.use_ml = False
+        self.rf_model = None
+        if rf_model_path and os.path.exists(rf_model_path):
+            try:
+                self.rf_model = joblib.load(rf_model_path)
+                self.use_ml = True
+                print(f"HandDetector: Loaded RF model ({rf_model_path}), "
+                      f"{self.rf_model.n_estimators} trees")
+            except Exception as e:
+                print(f"HandDetector: Failed to load RF model ({e}), "
+                      f"falling back to classical CV")
+        elif rf_model_path:
+            print(f"HandDetector: RF model not found at {rf_model_path}, "
+                  f"using classical CV")
 
     def detect_wave(self, hand_bbox: Optional[Tuple[int, int, int, int]],
                     frame_width: int, frame_count: int) -> str:
@@ -193,7 +213,7 @@ class GestureClassifier:
             return 0
         hand_contour = max(contours, key=cv2.contourArea)
         hull = cv2.convexHull(hand_contour, returnPoints=False)
-        if hull.ndim == 1 or len(hull) < 3:
+        if hull.ndim == 1 or hull.shape[0] < 3:
             return 0
         defects = cv2.convexityDefects(hand_contour, hull)
         if defects is None:

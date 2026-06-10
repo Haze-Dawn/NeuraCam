@@ -4,10 +4,18 @@ import time
 import os
 import signal
 import collections
+from collections import deque
 import numpy as np
 from datetime import datetime
 
 _has_display = bool(os.environ.get("DISPLAY")) or os.name == "nt"
+if _has_display:
+    try:
+        import cv2
+        cv2.namedWindow("probe")
+        cv2.destroyWindow("probe")
+    except Exception:
+        _has_display = False
 _shutdown_requested = False
 
 
@@ -23,7 +31,8 @@ signal.signal(signal.SIGTERM, _signal_handler)
 from src.utils.config import load_config, Config
 from src.capture.camera import Camera
 from src.capture.recorder import Recorder
-from src.cv.face_detector_cnn import FaceCNN
+from src.cv.face_detector_cnn import FaceCNN, FaceCNNv5, FaceCNNv7_1
+from src.cv.face_cnn_v0 import FaceCNNV0Wrapper
 from src.cv.face_tracker import KalmanTracker, Face, BoundingBox
 from src.cv.gesture_classifier import GestureClassifier, HandDetector
 from src.control.gimbal import GimbalController
@@ -32,6 +41,8 @@ from src.control.state_machine import StateMachine, Mode
 from src.utils.visualization import (
     draw_debug_overlay, compute_framing_error
 )
+from src.utils.ipc_server import IPCServer
+from src.utils.mjpeg_server import MJPEGServer
 
 
 class ExperimentLogger:
@@ -99,13 +110,38 @@ def run(cfg: Config = None):
         use_capture_thread=cfg.camera.use_capture_thread,
     )
 
-    face_cnn = FaceCNN(
-        model_path=cfg.models.face_cnn,
-        confidence_threshold=cfg.face_detection.confidence_threshold,
-        nms_iou_threshold=cfg.face_detection.nms_iou_threshold,
-        input_size=cfg.face_detection.input_size,
-        skip_scale_threshold=cfg.face_detection.skip_scale_threshold,
-    )
+    arch = getattr(cfg.face_detection, 'architecture', 'v4')
+    if arch == "v0" and cfg.models.face_cnn_v0 and os.path.exists(cfg.models.face_cnn_v0):
+        face_cnn = FaceCNNV0Wrapper(
+            model_path=cfg.models.face_cnn_v0,
+            onnx_path=cfg.models.face_cnn_v0.replace('.pth', '.onnx'),
+            score_threshold=getattr(cfg.face_detection_v0, 'confidence_threshold', 0.3),
+            nms_threshold=getattr(cfg.face_detection_v0, 'nms_iou_threshold', 0.45),
+            backend=getattr(cfg.face_detection_v0, 'backend', 'pytorch'),
+        )
+    elif arch == "v71" and cfg.models.face_cnn_v71 and os.path.exists(cfg.models.face_cnn_v71):
+        face_cnn = FaceCNNv7_1(
+            model_path=cfg.models.face_cnn_v71,
+            confidence_threshold=getattr(cfg.face_detection_v71, 'confidence_threshold', 0.25),
+            nms_iou_threshold=getattr(cfg.face_detection_v71, 'nms_iou_threshold', 0.3),
+        )
+    elif arch == "v5" and cfg.models.face_cnn_v5 and os.path.exists(cfg.models.face_cnn_v5):
+        face_cnn = FaceCNNv5(
+            model_path=cfg.models.face_cnn_v5,
+            confidence_threshold=getattr(cfg.face_detection_v5, 'confidence_threshold', 0.3),
+            nms_iou_threshold=getattr(cfg.face_detection_v5, 'nms_iou_threshold', 0.3),
+        )
+    else:
+        face_cnn = FaceCNN(
+            model_path=cfg.models.face_cnn,
+            confidence_threshold=cfg.face_detection.confidence_threshold,
+            nms_iou_threshold=cfg.face_detection.nms_iou_threshold,
+            input_size=cfg.face_detection.input_size,
+            skip_scale_threshold=cfg.face_detection.skip_scale_threshold,
+            num_anchors=cfg.face_detection.num_anchors,
+            use_depthwise=cfg.face_detection.use_depthwise,
+            use_se=cfg.face_detection.use_se,
+        )
 
     kalman_tracker = KalmanTracker(
         process_noise=cfg.kalman.process_noise,
@@ -121,6 +157,7 @@ def run(cfg: Config = None):
         hsv_upper=tuple(cfg.hand_detection.hsv_upper),
         min_area=cfg.hand_detection.min_area,
         use_motion=cfg.hand_detection.use_motion,
+        rf_model_path=cfg.models.gesture_detector,
     )
 
     gesture_classifier = GestureClassifier(
@@ -137,6 +174,11 @@ def run(cfg: Config = None):
         batch_commands=cfg.serial.batch_commands,
         control_rate_hz=cfg.serial.control_rate_hz,
         max_delta=cfg.pid.max_angle_delta,
+        pan_min=cfg.gimbal.pan_min,
+        pan_max=cfg.gimbal.pan_max,
+        tilt_min=cfg.gimbal.tilt_min,
+        tilt_max=cfg.gimbal.tilt_max,
+        center=cfg.gimbal.pan_center,
     )
     gimbal.home()
 
@@ -163,6 +205,15 @@ def run(cfg: Config = None):
         height=cfg.camera.height,
     )
 
+    ipc_server = IPCServer()
+    mjpeg_server = MJPEGServer()
+    mjpeg_server.start()
+    events = deque(maxlen=20)
+
+    def add_event(msg):
+        events.append(msg)
+        ipc_server.add_event(msg)
+
     logger = ExperimentLogger()
     profiler = LatencyProfiler(window=30)
 
@@ -175,8 +226,22 @@ def run(cfg: Config = None):
 
     time.sleep(1.0)
 
+    add_event("System started")
     print("System ready. Controls: q=quit, h=home, space=lock, r=record, "
           "wave=hand tracking, double-wave=toggle zoom")
+
+    face = None
+    prev_mode = state_machine.mode.value
+
+    def _choose_scales():
+        """Scale-skipping: use 1.0x when tracking, escalate when searching.
+        Average cost: ~1.03 forward passes per frame."""
+        if face and kalman_tracker.lost_frames == 0:
+            return [1.0], {"p4": 0.30, "p2": 0.20}  # locked: fast path
+        elif kalman_tracker.lost_frames < 10:
+            return [1.0], {"p4": 0.15, "p2": 0.10}  # recent coast: low thresh
+        else:
+            return [1.0, 1.5, 2.0], {"p4": 0.15, "p2": 0.10}  # SEARCH: escalate
 
     while running and not _shutdown_requested:
         profiler.mark("capture")
@@ -201,7 +266,8 @@ def run(cfg: Config = None):
 
         processing_frame = camera.get_processing_frame(frame)
         profiler.mark("detect")
-        faces = face_cnn.detect(processing_frame)
+        scales, conf_thresh = _choose_scales()
+        faces = face_cnn.detect(processing_frame, conf_thresholds=conf_thresh, scales=scales)
         profiler.mark("detect")
         profiler.mark("track")
         face = kalman_tracker.update(faces, frame_dt)
@@ -221,7 +287,10 @@ def run(cfg: Config = None):
 
         if state_machine.mode == Mode.HOME:
             gimbal.home()
-            if gimbal.pan_angle == 90 and gimbal.tilt_angle == 90:
+            gimbal.flush()
+            tol = 2
+            if (abs(gimbal.pan_angle - gimbal.center) <= tol
+                    and abs(gimbal.tilt_angle - gimbal.center) <= tol):
                 if face:
                     state_machine.mode = Mode.TRACKING
                 else:
@@ -263,6 +332,12 @@ def run(cfg: Config = None):
             defect_count = gesture_classifier.compute_defect_count(hand_roi)
             state_machine.update_hand_zoom(defect_count)
 
+        # Track PID errors and outputs (for IPC state)
+        error_x = 0.0
+        error_y = 0.0
+        delta_pan = 0.0
+        delta_tilt = 0.0
+
         # Face tracking PID
         if state_machine.mode == Mode.TRACKING and face:
             profiler.mark("pid")
@@ -277,6 +352,7 @@ def run(cfg: Config = None):
             delta_tilt = pid_tilt.update(error_y, frame_dt)
             gimbal.set_pan_delta(delta_pan)
             gimbal.set_tilt_delta(delta_tilt)
+            gimbal.flush()
             profiler.mark("pid")
 
         # Hand tracking PID
@@ -299,6 +375,7 @@ def run(cfg: Config = None):
             delta_tilt = pid_tilt.update(error_y, frame_dt)
             gimbal.set_pan_delta(delta_pan)
             gimbal.set_tilt_delta(delta_tilt)
+            gimbal.flush()
             profiler.mark("pid")
 
         elif state_machine.mode == Mode.IDLE:
@@ -310,6 +387,7 @@ def run(cfg: Config = None):
             target_pan = int(90 + (sweep_progress - 0.5) * 180)
             target_pan = max(0, min(180, target_pan))
             gimbal.set_pan(target_pan)
+            gimbal.flush()
             pid_pan.reset()
             pid_tilt.reset()
 
@@ -372,12 +450,75 @@ def run(cfg: Config = None):
             }
             logger.log(log_entry)
 
+        # Track mode transitions for event log
+        current_mode = state_machine.mode.value
+        if current_mode != prev_mode:
+            add_event(f"Mode: {prev_mode} → {current_mode}")
+            prev_mode = current_mode
+
+        # IPC: send state + frame to Rust clients
+        profiler.mark("ipc")
+        latency = profiler.snapshot()
+        ipc_state = {
+            "fps": round(current_fps, 1),
+            "mode": state_machine.mode.value,
+            "tracking_target": state_machine.tracking_target,
+            "face_detected": face is not None,
+            "face_x": face.bbox.center_x if face else 0,
+            "face_y": face.bbox.center_y if face else 0,
+            "face_w": face.bbox.w if face else 0,
+            "face_h": face.bbox.h if face else 0,
+            "face_confidence": round(face.confidence, 3) if face else 0,
+            "frame_w": w,
+            "frame_h": h,
+            "pan_angle": gimbal.pan_angle,
+            "tilt_angle": gimbal.tilt_angle,
+            "pan_target": gimbal._pending_pan if hasattr(gimbal, '_pending_pan') else gimbal.pan_angle,
+            "tilt_target": gimbal._pending_tilt if hasattr(gimbal, '_pending_tilt') else gimbal.tilt_angle,
+            "imu_pitch": round(gimbal.imu_pitch, 1),
+            "imu_roll": round(gimbal.imu_roll, 1),
+            "imu_yaw": round(gimbal.imu_yaw, 1),
+            "kalman_uncertainty": round(kalman_tracker.uncertainty, 3),
+            "zoom_level": state_machine.zoom_level,
+            "gesture": gesture_result.gesture if gesture_result else "NONE",
+            "gesture_method": gesture_result.method if gesture_result else "",
+            "recording": recorder.recording,
+            "serial_connected": gimbal._connected,
+            "hand_detected": hand_detected,
+            "pid_pan_error": round(error_x, 3),
+            "pid_tilt_error": round(error_y, 3),
+            "pid_pan_output": round(delta_pan, 3),
+            "pid_tilt_output": round(delta_tilt, 3),
+            "pid_pan_p": round(pid_pan.Kp * error_x, 3),
+            "pid_pan_i": round(pid_pan.Ki * pid_pan.integral, 3),
+            "pid_pan_d": round(pid_pan.Kd * pid_pan.filtered_derivative, 3),
+            "pid_tilt_p": round(pid_tilt.Kp * error_y, 3),
+            "pid_tilt_i": round(pid_tilt.Ki * pid_tilt.integral, 3),
+            "pid_tilt_d": round(pid_tilt.Kd * pid_tilt.filtered_derivative, 3),
+            "latency_ms": latency,
+            "events": list(events),
+            "timestamp": time.time(),
+        }
+        try:
+            _, jpeg = cv2.imencode(".jpg", overlay, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            jpeg_bytes = jpeg.tobytes()
+            mjpeg_server.publish(jpeg_bytes)
+            ipc_server.send_state(ipc_state, jpeg_bytes)
+        except Exception:
+            ipc_server.send_state(ipc_state)
+        profiler.mark("ipc")
+
         if _has_display:
-            cv2.imshow("AI Gimbal Camera", overlay)
+            cv2.imshow("NeuraCam", overlay)
             key = cv2.waitKey(1) & 0xFF
         else:
             key = 0xFF
         profiler.mark("display")
+
+        # Handle IPC keyboard input (from Rust GUI)
+        ipc_key = ipc_server.read_key()
+        if ipc_key:
+            key = ord(ipc_key)
 
         if key == ord('q'):
             running = False
@@ -394,10 +535,17 @@ def run(cfg: Config = None):
                 print("Recording started")
 
     gimbal.home_immediate()
+    gimbal.close()
     camera.release()
     recorder.stop()
+    mjpeg_server.stop()
+    ipc_server.stop()
     logger.save("session")
-    cv2.destroyAllWindows()
+    if _has_display:
+        try:
+            cv2.destroyAllWindows()
+        except Exception:
+            pass
     print("System stopped")
 
 

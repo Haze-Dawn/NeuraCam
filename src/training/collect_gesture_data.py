@@ -2,11 +2,15 @@ import cv2
 import numpy as np
 import os
 import csv
+import time
 
 
 GESTURES = ["OPEN_PALM", "FIST", "THUMBS_UP", "POINT", "PEACE"]
-SAMPLES_PER_GESTURE = 50
+HANDS = ["RIGHT", "LEFT"]
+SAMPLES_PER_GESTURE = 250
 HOG_WIN_SIZE = (64, 64)
+COUNTDOWN_SECONDS = 3
+INTERMISSION_SECONDS = 4
 
 
 def find_hand_roi(frame: np.ndarray) -> np.ndarray:
@@ -50,86 +54,6 @@ def extract_hog(roi: np.ndarray) -> list:
     return hog.compute(gray).flatten().tolist()
 
 
-def main(output_path: str = "data/gesture/raw/features.csv"):
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-
-    print(f"Collecting {SAMPLES_PER_GESTURE} samples per gesture x {len(GESTURES)} gestures")
-    print("Hold the pose and press SPACE to start recording (50 frames)")
-    print("Press ESC to skip current gesture, q to quit")
-
-    all_features = []
-    cap = cv2.VideoCapture(0)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-
-    for gesture in GESTURES:
-        collected = 0
-        print(f"\n--- Gesture: {gesture} ---")
-        print("  Hold the pose and press SPACE")
-
-        recording = False
-        record_count = 0
-
-        while collected < SAMPLES_PER_GESTURE:
-            ret, frame = cap.read()
-            if not ret:
-                continue
-
-            display = frame.copy()
-            hand_roi = find_hand_roi(frame)
-
-            if hand_roi is not None:
-                h_disp, w_disp = hand_roi.shape[:2]
-                display[10:10 + h_disp, 10:10 + w_disp] = hand_roi
-                cv2.rectangle(display, (10, 10),
-                              (10 + w_disp, 10 + h_disp), (0, 255, 0), 1)
-
-            status = f"Gesture: {gesture}  [{collected}/{SAMPLES_PER_GESTURE}]"
-            if recording:
-                status += f" RECORDING {record_count}"
-            cv2.putText(display, status,
-                        (10, display.shape[0] - 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-            cv2.putText(display, "SPACE=record  ESC=skip  q=quit",
-                        (10, display.shape[0] - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-            cv2.imshow("Gesture Data Collection", display)
-
-            key = cv2.waitKey(1) & 0xFF
-
-            if key == ord(' '):
-                recording = True
-                record_count = 0
-                print("  Recording...")
-
-            elif key == 27:
-                print(f"  Skipping {gesture}")
-                break
-            elif key == ord('q'):
-                cap.release()
-                cv2.destroyAllWindows()
-                _save_csv(all_features, output_path)
-                return
-
-            if recording:
-                if hand_roi is not None:
-                    features = extract_hog(hand_roi)
-                    all_features.append([gesture] + features)
-                    collected += 1
-                    record_count += 1
-                    if collected % 10 == 0:
-                        print(f"  Captured {collected}/{SAMPLES_PER_GESTURE}")
-                    if record_count >= SAMPLES_PER_GESTURE:
-                        recording = False
-                else:
-                    print("  Hand lost during recording -- continuing")
-
-    cap.release()
-    cv2.destroyAllWindows()
-    _save_csv(all_features, output_path)
-    print(f"\nCollection complete. {len(all_features)} samples saved to {output_path}")
-
-
 def _save_csv(rows: list, path: str):
     if not rows:
         print("No data collected")
@@ -141,6 +65,127 @@ def _save_csv(rows: list, path: str):
         writer.writerow(header)
         writer.writerows(rows)
     print(f"Saved {len(rows)} rows to {path}")
+
+
+def _show_countdown(display, text, seconds):
+    start = time.time()
+    while time.time() - start < seconds:
+        remaining = int(seconds - (time.time() - start)) + 1
+        overlay = display.copy()
+        cv2.putText(overlay, text, (50, display.shape[0] // 2 - 40),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2)
+        cv2.putText(overlay, str(remaining),
+                    (display.shape[1] // 2 - 30, display.shape[0] // 2 + 40),
+                    cv2.FONT_HERSHEY_SIMPLEX, 3.0, (0, 255, 255), 3)
+        cv2.imshow("Gesture Data Collection", overlay)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            return False
+    return True
+
+
+def main(output_path: str = "data/gesture/raw/features.csv"):
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    total_expected = SAMPLES_PER_GESTURE * len(GESTURES) * len(HANDS)
+    print(f"Auto-collecting {SAMPLES_PER_GESTURE} samples per gesture "
+          f"x {len(GESTURES)} gestures x {len(HANDS)} hands = {total_expected} total")
+    print("Controls while running:")
+    print("  q = quit and save")
+
+    all_features = []
+    cap = cv2.VideoCapture(0)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
+    for hand in HANDS:
+        for gesture in GESTURES:
+            print(f"\n--- {hand} Hand: {gesture} ---")
+
+            ret, frame = cap.read()
+            if not ret:
+                continue
+            display = frame.copy()
+
+            if not _show_countdown(display, f"{hand} hand - Get ready for {gesture}",
+                                   COUNTDOWN_SECONDS):
+                break
+
+            collected = 0
+            hand_lost_warnings = 0
+            max_hand_lost_warnings = 10
+
+            while collected < SAMPLES_PER_GESTURE:
+                ret, frame = cap.read()
+                if not ret:
+                    continue
+
+                display = frame.copy()
+                hand_roi = find_hand_roi(frame)
+
+                if hand_roi is not None:
+                    h_disp, w_disp = hand_roi.shape[:2]
+                    display[10:10 + h_disp, 10:10 + w_disp] = hand_roi
+                    cv2.rectangle(display, (10, 10),
+                                  (10 + w_disp, 10 + h_disp), (0, 255, 0), 1)
+
+                    features = extract_hog(hand_roi)
+                    all_features.append([gesture] + features)
+                    collected += 1
+                    hand_lost_warnings = 0
+
+                    if collected % 10 == 0:
+                        print(f"  Captured {collected}/{SAMPLES_PER_GESTURE}")
+                else:
+                    hand_lost_warnings += 1
+                    if hand_lost_warnings > max_hand_lost_warnings:
+                        print("  Hand not detected for too long -- "
+                              "moving to next gesture")
+                        break
+
+                bar_width = int(300 * collected / SAMPLES_PER_GESTURE)
+                cv2.rectangle(display, (50, display.shape[0] - 60),
+                              (50 + bar_width, display.shape[0] - 50),
+                              (0, 255, 0), -1)
+                cv2.putText(display,
+                            f"{gesture} [{collected}/{SAMPLES_PER_GESTURE}]",
+                            (10, display.shape[0] - 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                cv2.putText(display, "Hold pose -- auto-capturing",
+                            (10, display.shape[0] - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+                cv2.imshow("Gesture Data Collection", display)
+
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    cap.release()
+                    cv2.destroyAllWindows()
+                    _save_csv(all_features, output_path)
+                    return
+
+            if collected > 0:
+                print(f"  Finished {hand} {gesture}: {collected} samples")
+
+            g_idx = GESTURES.index(gesture)
+            next_text = f"Next: {HANDS[HANDS.index(hand) + 1]} hand - {GESTURES[0]}" if g_idx == len(GESTURES) - 1 and HANDS.index(hand) < len(HANDS) - 1 else (f"Next: {GESTURES[g_idx + 1]}" if g_idx < len(GESTURES) - 1 else "All done!")
+            overlay = np.zeros_like(display)
+            cv2.putText(overlay, f"{hand} {gesture} done!",
+                        (display.shape[1] // 2 - 140, display.shape[0] // 2),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 2)
+            cv2.putText(overlay, next_text,
+                        (display.shape[1] // 2 - 100, display.shape[0] // 2 + 40),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (200, 200, 200), 2)
+            for _ in range(int(INTERMISSION_SECONDS * 10)):
+                cv2.imshow("Gesture Data Collection", overlay)
+                if cv2.waitKey(100) & 0xFF == ord('q'):
+                    break
+            else:
+                continue
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+    _save_csv(all_features, output_path)
+    print(f"\nCollection complete. {len(all_features)} samples "
+          f"saved to {output_path}")
 
 
 if __name__ == "__main__":

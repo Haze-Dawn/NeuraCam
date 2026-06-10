@@ -1,0 +1,12 @@
+{
+  "best_params": {
+    "C": 50,
+    "gamma": "scale",
+    "kernel": "rbf"
+  },
+  "cv_accuracy": 0.9555,
+  "validation_accuracy": 0.946,
+  "pca_components": 80,
+  "pca_variance_retained": 0.8419886827468872,
+  "samples": 2500
+}

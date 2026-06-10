@@ -221,9 +221,9 @@ Detection confidence distribution (200 images, 127K detections):
 
 ---
 
-## 7. Recommendations for Capstone Demo
+## 7. Recommendations for Deployment
 
-For the capstone demo (single face, 0.5-2m, controlled lighting), the model as-is will work acceptably if you:
+For single-face tracking at 0.5-2m with controlled lighting, the model as-is works acceptably if you:
 
 1. **Set confidence threshold to 0.3** — eliminates 95% of false positives while keeping 95% detection rate
 2. **Use the Kalman filter** — temporal smoothing rejects sporadic false detections
@@ -649,7 +649,7 @@ for d in detections:
 
 The 0.1 IoU threshold was chosen because same-face detections at different scales have IoU > 0.15 (from the 8-pixel grid stride), while different faces in typical WIDER Face scenes have IoU < 0.05. 0.1 is a safe margin between these distributions.
 
-**Expected impact:** Preserves multi-face detection capability while still eliminating the 78% false positive tail. In single-face scenarios (capstone demo), behavior is identical to v3.1.
+**Expected impact:** Preserves multi-face detection capability while still eliminating the 78% false positive tail. In single-face scenarios, behavior is identical to v3.1.
 
 ### 10.8 Updated Training Command (v3.2)
 
@@ -893,14 +893,32 @@ PYTHONPATH="." python src/training/train_face_cnn.py \
     --multiscale-sizes 96 128 160 192
 ```
 
-### 11.4 Expected Cumulative Improvement (v2.0 → v3.3)
+### 11.4 Expected Cumulative Improvement (v2.0 → v3.3 → v5.0)
 
-| Metric | v2.0 | v3.2 (expected) | v3.3 (expected) | Primary driver |
+| Metric | v2.0 | v3.3 (expected) | v5.0 (measured early) | Primary driver |
 |---|---|---|---|---|
-| Per-cell F1 at 0.5 | 0.054 | 0.18-0.30 | 0.20-0.35 | FocalLoss + FPN + multi-scale |
-| Per-cell recall at 0.5 | 0.024 | 0.14-0.22 | 0.16-0.26 | sigma=1.5 + FPN + multi-scale |
-| Full-frame recall at scale 0.57 | ~0.005 | ~0.03-0.06 | ~0.06-0.12 | Multi-scale training (96px size) |
-| Full-frame recall at scale 1.0 | ~0.015 | ~0.06-0.12 | ~0.08-0.16 | Multi-scale training (192px size) |
-| Validation F1 | 0.054 | 0.20-0.32 | 0.22-0.38 | FocalLoss + EMA + FPN + multi-scale |
-| Training stability | Stable | Safe | Safer | Gradient clipping (max_norm=5.0) |
-| Training time (RTX 2060) | 48 min | 25-30 min | 30-35 min | AMP + multi-scale (occasional 192px) |
+| Per-cell F1 at 0.5 | 0.054 | 0.22-0.38 | **0.249 (P4, 1 epoch)** | Full-frame training + FPN |
+| Full-frame recall at scale 0.57 | ~0.005 | ~0.06-0.12 | N/A (single pass) | FPN neck eliminates pyramid |
+| Inference time (640×480) | ~500ms (NMS bound) | ~500ms (NMS bound) | **<30ms (peak find)** | 12× FLOP reduction + anchor-free |
+| Model params | 99K | 140K | **406K** | 6.5× capacity increase |
+| Model size | 409 KB | 563 KB | **1.55 MB** | Still tiny for deployment |
+| FLOPs/inference | 9.02 GFLOPs | 9.09 GFLOPs | **0.50 GFLOPs** | Single-pass FPN vs 5-scale pyramid |
+| Training time (RTX 2060) | 48 min | 30-35 min | ~8 hours (100 ep) | Full-frame 640×480 is expensive |
+| Inference speed | 21 FPS | 25 FPS | **~30-50 FPS (est.)** | No NMS bottleneck |
+
+**v5.0 final results (100 epochs, 10.1 hours on RTX 2060):**
+
+| Metric | v2.0 | v3.3 (expected) | v5.0 (final) | Primary driver |
+|---|---|---|---|---|
+| Per-cell F1 at 0.5 | 0.054 | 0.22-0.38 | **0.525 (P4)** 🏆 | Full-frame training + FPN + LR restart |
+| Inference time (640×480) | ~500ms (NMS bound) | ~500ms (NMS bound) | **<30ms (peak find)** | 12× FLOP reduction + anchor-free |
+| Model params | 99K | 140K | **394K** | 6.4× capacity increase |
+| Model size | 409 KB | 563 KB | **1.50 MB** | Still tiny for deployment |
+| FLOPs/inference | 9.02 GFLOPs | 9.09 GFLOPs | **0.50 GFLOPs** | Single-pass FPN vs 5-scale pyramid |
+| Training time (RTX 2060) | 48 min | 30-35 min | **10.1 hours** | Full-frame 640×480 is expensive |
+
+**Key finding:** The LR restart at epoch 50 was critical — it broke an initial plateau
+at P4 F1~0.47 and pushed the model to 0.525 by epoch 81. Hard-negative mining was
+deferred (too expensive on 640×480 full frames). The second-pass verifier remains
+deferred. P4 F1=0.525 exceeds the original target range (0.35-0.50) and is **6.25×
+v4.0's best (0.084)**. Both architectures coexist (switch via `--arch v4|v5`).

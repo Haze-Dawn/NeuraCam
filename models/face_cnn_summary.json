@@ -1,50 +1,50 @@
 {
-  "total_time_s": 5889.846231222153,
-  "total_time_min": 98.16410385370254,
-  "best_val_obj_loss": Infinity,
-  "best_val_f1": 0.0,
-  "total_params": 140420,
-  "trainable_params": 140420,
-  "model_size_mb": 0.54,
-  "epochs_completed": 50,
-  "total_tflops": 338.4174,
-  "tflops_per_epoch": 6.768348,
-  "inference_gflops": 10.2551,
+  "total_time_s": 2377.714776992798,
+  "total_time_min": 39.62857961654663,
+  "best_val_obj_loss": 0.14447437865393503,
+  "best_val_f1": 0.08444609206420005,
+  "total_params": 61994,
+  "trainable_params": 61994,
+  "model_size_mb": 0.24,
+  "epochs_completed": 35,
+  "total_tflops": 148.4213,
+  "tflops_per_epoch": 4.240608,
+  "inference_gflops": 6.4096,
   "inference_scales": 5,
   "inference_per_scale": [
     {
       "scale": 1.0,
       "h": 480,
       "w": 640,
-      "gflops": 3.3049
+      "gflops": 2.0705
     },
     {
       "scale": 0.8695652173913044,
       "h": 417,
       "w": 556,
-      "gflops": 2.5196
+      "gflops": 1.5735
     },
     {
       "scale": 0.7561436672967865,
       "h": 362,
       "w": 483,
-      "gflops": 1.902
+      "gflops": 1.1873
     },
     {
       "scale": 0.6575162324319883,
       "h": 315,
       "w": 420,
-      "gflops": 1.4374
+      "gflops": 0.8982
     },
     {
       "scale": 0.5717532455930334,
       "h": 274,
       "w": 365,
-      "gflops": 1.0911
+      "gflops": 0.6801
     }
   ],
-  "training_flops_per_sample": 176259072.0,
-  "training_flops_per_batch_fwd_bwd": 67683483648.0,
+  "training_flops_per_sample": 110432512.0,
+  "training_flops_per_batch_fwd_bwd": 169624338432.0,
   "flops_breakdown": [
     [
       "block1_conv",
@@ -71,8 +71,12 @@
       131072
     ],
     [
-      "block3_conv",
-      37748736
+      "block3_dw",
+      589824
+    ],
+    [
+      "block3_pw",
+      4194304
     ],
     [
       "block3_bn",
@@ -83,8 +87,12 @@
       65536
     ],
     [
-      "block4_conv",
-      37748736
+      "block4_dw",
+      294912
+    ],
+    [
+      "block4_pw",
+      4194304
     ],
     [
       "block4_bn",
@@ -103,13 +111,33 @@
       16777216
     ],
     [
+      "se_block",
+      4352
+    ],
+    [
       "head_conv",
-      262144
+      655360
     ]
   ],
-  "gpu_efficiency_pct": 0.9,
+  "gpu_efficiency_pct": 1.0,
   "data_load_vs_compute_pct": {
-    "load": 6.1033415109007265,
-    "compute": 93.89665848909928
+    "load": 11.632715193353842,
+    "compute": 88.36728480664615
+  },
+  "architecture": {
+    "depthwise": true,
+    "se_block": true,
+    "num_anchors": 3,
+    "anchor_scales": [
+      1.5,
+      3.0,
+      6.0
+    ]
+  },
+  "augmentations": {
+    "mosaic": true,
+    "mixup": true,
+    "cutout": true,
+    "label_smoothing": 0.0
   }
 }

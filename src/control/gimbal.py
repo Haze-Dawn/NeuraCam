@@ -12,18 +12,26 @@ class GimbalController:
                  baud: int = 115200, timeout: float = 0.1,
                  batch_commands: bool = True,
                  control_rate_hz: float = 100.0,
-                 max_delta: float = 5.0):
+                 max_delta: float = 5.0,
+                 pan_min: int = 0, pan_max: int = 180,
+                 tilt_min: int = 45, tilt_max: int = 135,
+                 center: int = 90):
         self.port = port
         self.baud = baud
         self.timeout = timeout
         self.batch_commands = batch_commands
         self.control_interval = 1.0 / max(control_rate_hz, 1.0)
         self.max_delta = max_delta
+        self.pan_min = pan_min
+        self.pan_max = pan_max
+        self.tilt_min = tilt_min
+        self.tilt_max = tilt_max
+        self.center = center
         self._ser = None
-        self.pan_angle = 90
-        self.tilt_angle = 90
-        self._pending_pan = 90
-        self._pending_tilt = 90
+        self.pan_angle = center
+        self.tilt_angle = center
+        self._pending_pan = center
+        self._pending_tilt = center
         self._connected = False
         self.imu_pitch = 0.0
         self.imu_roll = 0.0
@@ -91,8 +99,8 @@ class GimbalController:
     def _flush_batch(self):
         if not self.batch_commands:
             return
-        p = int(max(0, min(180, self._pending_pan)))
-        t = int(max(45, min(135, self._pending_tilt)))
+        p = int(max(self.pan_min, min(self.pan_max, self._pending_pan)))
+        t = int(max(self.tilt_min, min(self.tilt_max, self._pending_tilt)))
         self.pan_angle = p
         self.tilt_angle = t
         self._send(f"P:{p} T:{t}")
@@ -122,28 +130,33 @@ class GimbalController:
         return candidate
 
     def set_pan(self, angle: float):
-        clamped = max(0.0, min(180.0, angle))
-        target = self.smooth_move(float(self.pan_angle), clamped, 0.0, 180.0)
+        clamped = max(float(self.pan_min), min(float(self.pan_max), angle))
+        target = self.smooth_move(float(self.pan_angle), clamped,
+                                  float(self.pan_min), float(self.pan_max))
         target = int(round(target))
-        target = max(0, min(180, target))
+        target = max(self.pan_min, min(self.pan_max, target))
+        self.pan_angle = target
         if self.batch_commands:
             self._pending_pan = target
-            self._flush_batch()
         else:
-            self.pan_angle = target
             self._send(f"PAN:{target}")
 
     def set_tilt(self, angle: float):
-        clamped = max(45.0, min(135.0, angle))
-        target = self.smooth_move(float(self.tilt_angle), clamped, 45.0, 135.0)
+        clamped = max(float(self.tilt_min), min(float(self.tilt_max), angle))
+        target = self.smooth_move(float(self.tilt_angle), clamped,
+                                  float(self.tilt_min), float(self.tilt_max))
         target = int(round(target))
-        target = max(45, min(135, target))
+        target = max(self.tilt_min, min(self.tilt_max, target))
+        self.tilt_angle = target
         if self.batch_commands:
             self._pending_tilt = target
-            self._flush_batch()
         else:
-            self.tilt_angle = target
             self._send(f"TILT:{target}")
+
+    def flush(self):
+        if not self.batch_commands:
+            return
+        self._flush_batch()
 
     def set_pan_delta(self, delta: float):
         target = self.pan_angle + delta
@@ -170,8 +183,8 @@ class GimbalController:
             print(f"IMU poll failed: {e}")
 
     def home(self):
-        self.set_pan(90)
-        self.set_tilt(90)
+        self.set_pan(self.center)
+        self.set_tilt(self.center)
 
     def home_immediate(self):
         """Send HOME command directly to Arduino, bypassing smooth_move.
@@ -182,8 +195,8 @@ class GimbalController:
                 self._ser.write(b"HOME\n")
             except Exception as e:
                 print(f"Serial write failed during home_immediate: {e}")
-        self.pan_angle = 90
-        self.tilt_angle = 90
+        self.pan_angle = self.center
+        self.tilt_angle = self.center
 
     def status(self) -> str:
         return (f"PAN:{self.pan_angle} TILT:{self.tilt_angle} "

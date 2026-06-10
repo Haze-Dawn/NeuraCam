@@ -1,0 +1,11 @@
+[package]
+name = "neuracam-gui"
+version = "1.0.0"
+edition = "2021"
+
+[dependencies]
+gtk4 = "0.9"
+libadwaita = "0.7"
+gdk-pixbuf = "0.21"
+neuracam-shared = { path = "../shared" }
+serde_json = "1"

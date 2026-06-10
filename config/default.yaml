@@ -1,12 +1,13 @@
-# AI Gimbal Camera - Default Configuration (v3.2)
+# NeuraCam - Default Configuration (FaceCNN V0)
+# Architecture: v4 (anchor-based), v5 (anchor-free FPN), v71 (stride-4), v0 (FaceCNN V0 186K)
 
 camera:
-  source: 0
+  source: 2
   width: 1280
   height: 720
   fps: 30
-  processing_width: 640
-  processing_height: 480
+  processing_width: 320
+  processing_height: 240
   use_capture_thread: true
 
 serial:
@@ -17,16 +18,40 @@ serial:
   control_rate_hz: 100
 
 models:
-  face_cnn: models/face_cnn.pth
-  gesture_pca: models/gesture_pca.pkl
+  face_cnn: models/face_cnn.pth                        # v4.0: 62K anchor-based (legacy)
+  face_cnn_v5: models/face_cnn_v5_best.pth             # v5.0: 422K anchor-free FPN
+  face_cnn_v71: models/face_cnn_v71_best.pth           # v7.1: 504K stride-4
+  face_cnn_v0: models/face_cnn_v0/face_cnn_v0.pth      # V0: 186K FaceCNN V0
+  gesture_detector: models/gesture_detector_rf.pkl
   gesture_svm: models/gesture_svm.pkl
   gesture_scaler: models/gesture_scaler.pkl
+  gesture_pca: models/gesture_pca.pkl
 
 face_detection:
+  architecture: v0                                 # v4, v5, v71, or v0 (recommended)
   confidence_threshold: 0.3
   nms_iou_threshold: 0.25
   input_size: 128
   skip_scale_threshold: 0.9
+  num_anchors: 3
+  use_depthwise: true
+  use_se: true
+
+face_detection_v5:
+  confidence_threshold: 0.3
+  nms_iou_threshold: 0.3
+
+face_detection_v71:
+  confidence_threshold: 0.25
+  nms_iou_threshold: 0.3
+  resolution_adaptive: true
+  use_track_consistency_filter: true
+
+face_detection_v0:
+  confidence_threshold: 0.3
+  nms_iou_threshold: 0.45
+  input_size: 640
+  backend: pytorch                                 # pytorch or onnx
 
 kalman:
   process_noise: 0.01
@@ -53,7 +78,7 @@ pid:
 
 gesture:
   min_confidence: 0.6
-  pca_components: 80
+  pca_components: 200
 
 hand_detection:
   ycrcb_lower: [0, 133, 77]

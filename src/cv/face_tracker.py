@@ -167,6 +167,14 @@ class KalmanTracker:
         self.primary_id = None
 
     @property
+    def lost_frames(self) -> int:
+        if not self.tracks:
+            return 999
+        primary = next((t for t in self.tracks
+                        if t.track_id == self.primary_id), self.tracks[0])
+        return primary.lost_count
+
+    @property
     def uncertainty(self) -> float:
         if not self.tracks:
             return 1.0

@@ -6,9 +6,10 @@ from src.cv.face_detector_cnn import FaceCNN, FaceFCN
 def test_face_fcn_architecture():
     model = FaceFCN()
     total_params = sum(p.numel() for p in model.parameters())
-    assert total_params > 100000
-    assert total_params < 200000
-    assert model.head.out_channels == 4
+    assert total_params > 50000
+    assert total_params < 100000
+    assert model.head_obj.out_channels == 1
+    assert model.head_bbox.out_channels == 9
 
 
 def test_face_fcn_forward_shape():
@@ -18,15 +19,15 @@ def test_face_fcn_forward_shape():
     import torch
     with torch.no_grad():
         out = model(torch.from_numpy(x))
-    assert out.shape == (1, 4, 16, 16)
+    assert out.shape == (1, 10, 16, 16)
 
 
 def test_face_fcn_conv_layers():
     model = FaceFCN()
     assert model.block1[0].kernel_size == (5, 5)
     assert model.block2[0].kernel_size == (3, 3)
-    assert model.block3[0].kernel_size == (3, 3)
-    assert model.block4[0].dilation == (2, 2)
+    assert model.block3[0].depthwise.kernel_size == (3, 3)
+    assert model.block4[0].depthwise.dilation == (2, 2)
     assert model.skip_conv.kernel_size == (1, 1)
     assert model.fuse_conv.kernel_size == (1, 1)
 
